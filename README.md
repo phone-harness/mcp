@@ -235,6 +235,7 @@ phone-harness-mcp [OPTIONS]
   --allowed-origins ORIGINS Origin header values to accept
   --public-url URL          The URL clients reach the server at (with --oauth-issuer)
   --oauth-issuer URL        Publish OAuth protected-resource metadata for this issuer
+  --oauth-scope SCOPE       The scope advertised to OAuth clients  [default: phone:drive]
   --stateful                HTTP mode: one MCP session per client
 ```
 
@@ -278,6 +279,7 @@ domain, done. `mcp.phone-harness.com` runs this way.
 | `PHONE_HARNESS_MCP_ALLOWED_HOSTS` | `*` | Host header check; off on Vercel, whose edge owns routing. |
 | `PHONE_HARNESS_MCP_OAUTH_ISSUER` | unset | Set to the OAuth authorization server to publish protected-resource metadata. Unset means API keys only. |
 | `PHONE_HARNESS_MCP_PUBLIC_URL` | unset | The URL clients use, required with the issuer. |
+| `PHONE_HARNESS_MCP_OAUTH_SCOPE` | `phone:drive` | The scope advertised to OAuth clients. |
 
 `vercel.json` sets `maxDuration` to 300 s so `phone_start_device` can wait
 for a phone to boot.

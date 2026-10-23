@@ -79,8 +79,14 @@ class RequireBearer:
 class CloudTokenVerifier:
     """Is this bearer good for Phone Harness Cloud? Ask the API, remember briefly."""
 
-    def __init__(self, api_url: str | None = None, ttl: float = 60, negative_ttl: float = 10):
+    def __init__(self, api_url: str | None = None, scopes: list[str] | None = None,
+                 ttl: float = 60, negative_ttl: float = 10):
         self.api_url = api_url
+        # The scopes a bearer the API accepts is deemed to hold. The API is the
+        # policy: if `GET /me` answered, this credential may drive phones, whether
+        # it is an API key (no scopes of its own) or an OAuth token the API already
+        # checked for the scope it requires.
+        self.scopes = list(scopes or [])
         self.ttl = ttl
         self.negative_ttl = negative_ttl
         self._cache: dict[str, tuple[float, AccessToken | None]] = {}
@@ -105,7 +111,7 @@ class CloudTokenVerifier:
         if not isinstance(me, dict):
             self._cache[key] = (now + self.negative_ttl, None)
             return None
-        access = AccessToken(token=token, client_id="phone-harness-cloud", scopes=[],
+        access = AccessToken(token=token, client_id="phone-harness-cloud", scopes=list(self.scopes),
                              subject=str(me.get("uid") or me.get("id") or "") or None)
         self._cache[key] = (now + self.ttl, access)
         if len(self._cache) > 4096:

@@ -40,9 +40,12 @@ def _security(host: str, allowed_hosts: str | None, allowed_origins: str | None)
                                      allowed_origins=origins)
 
 
+DEFAULT_OAUTH_SCOPE = "phone:drive"
+
+
 def build_http_app(*, api: str | None, mcp_path: str, host: str, allowed_hosts: str | None,
                    allowed_origins: str | None, public_url: str | None, oauth_issuer: str | None,
-                   stateful: bool):
+                   stateful: bool, oauth_scope: str | None = DEFAULT_OAUTH_SCOPE):
     """The ASGI app for `--port`. Separate from `main` so tests can serve it."""
     from starlette.requests import Request
     from starlette.responses import JSONResponse
@@ -53,8 +56,14 @@ def build_http_app(*, api: str | None, mcp_path: str, host: str, allowed_hosts: 
             raise click.UsageError("--oauth-issuer needs --public-url, the URL clients reach this server at.")
         from mcp.server.auth.settings import AuthSettings
         from .auth import CloudTokenVerifier
-        auth = AuthSettings(issuer_url=oauth_issuer, resource_server_url=public_url, validate_token_resource=False)
-        token_verifier = CloudTokenVerifier(api)
+        # The scope is advertised in the protected-resource metadata, so a client
+        # asks the authorization server for it; the API refuses a dynamic client's
+        # token without it, and the verifier reports it for every bearer the API
+        # accepts, API keys included.
+        scopes = [oauth_scope] if oauth_scope else []
+        auth = AuthSettings(issuer_url=oauth_issuer, resource_server_url=public_url,
+                            validate_token_resource=False, required_scopes=scopes)
+        token_verifier = CloudTokenVerifier(api, scopes=scopes)
     server = build_server(cloud_for=hosted_cloud(api), allow_files=False, auth=auth, token_verifier=token_verifier)
 
     @server.custom_route("/health", methods=["GET"])
@@ -95,9 +104,12 @@ def build_http_app(*, api: str | None, mcp_path: str, host: str, allowed_hosts: 
 @click.option("--oauth-issuer", metavar="URL",
               help="Publish OAuth protected-resource metadata naming this authorization server, and accept its "
                    "tokens (verified through the API). Without it, HTTP mode takes API keys only.")
+@click.option("--oauth-scope", metavar="SCOPE", default=DEFAULT_OAUTH_SCOPE, show_default=True,
+              help="The scope the protected-resource metadata advertises, which OAuth clients then request.")
 @click.option("--stateful", is_flag=True, help="HTTP mode: keep one MCP session per client instead of answering "
               "each request on its own.")
-def main(api_key, api_url, port, host, mcp_path, allowed_hosts, allowed_origins, public_url, oauth_issuer, stateful):
+def main(api_key, api_url, port, host, mcp_path, allowed_hosts, allowed_origins, public_url, oauth_issuer,
+         oauth_scope, stateful):
     """MCP server for Phone Harness Cloud: drive a real iPhone or Android from any MCP client."""
     api = (api_url or globals()["api_url"]()).rstrip("/")
     if port is None:
@@ -109,7 +121,7 @@ def main(api_key, api_url, port, host, mcp_path, allowed_hosts, allowed_origins,
     import uvicorn
     app = build_http_app(api=api, mcp_path=mcp_path, host=host, allowed_hosts=allowed_hosts,
                          allowed_origins=allowed_origins, public_url=public_url, oauth_issuer=oauth_issuer,
-                         stateful=stateful)
+                         stateful=stateful, oauth_scope=oauth_scope)
     click.echo(f"phone-harness-mcp {__version__}: http://{host}:{port}{mcp_path} -> {api}", err=True)
     uvicorn.run(app, host=host, port=port, log_level="info")
 

@@ -10,6 +10,7 @@ command line:
     PHONE_HARNESS_MCP_PUBLIC_URL      the URL clients use, e.g.
                                       https://mcp.phone-harness.com/mcp (OAuth only)
     PHONE_HARNESS_MCP_OAUTH_ISSUER    switches OAuth on; unset means API keys only
+    PHONE_HARNESS_MCP_OAUTH_SCOPE     the scope advertised to OAuth clients; default phone:drive
     PHONE_HARNESS_CLOUD_API           the API; default https://api.phone-harness.com
 
 Requests are stateless and answered as JSON, so any instance can take any
@@ -20,7 +21,7 @@ from __future__ import annotations
 
 import os
 
-from .cli import build_http_app
+from .cli import DEFAULT_OAUTH_SCOPE, build_http_app
 from .cloud import api_url
 
 
@@ -37,5 +38,6 @@ app = build_http_app(
     allowed_origins=_env("PHONE_HARNESS_MCP_ALLOWED_ORIGINS"),
     public_url=_env("PHONE_HARNESS_MCP_PUBLIC_URL"),
     oauth_issuer=_env("PHONE_HARNESS_MCP_OAUTH_ISSUER"),
+    oauth_scope=_env("PHONE_HARNESS_MCP_OAUTH_SCOPE", DEFAULT_OAUTH_SCOPE),
     stateful=False,
 )

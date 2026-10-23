@@ -150,3 +150,71 @@ async def test_vercel_entrypoint_forwards_the_bearer(vercel_app, api):
                 r = await s.call_tool("phone_list_available_devices", {})
     assert not r.is_error and "No phone is running" in text_of(r)
     assert {b for _m, _p, b in api.requests} == {"pck_test"}
+
+
+@pytest.fixture
+def oauth_hosted(api):
+    """HTTP mode with OAuth switched on: the SDK publishes protected-resource metadata
+    and verifies every bearer through the API."""
+    port = free_port()
+    public = f"http://127.0.0.1:{port}/mcp"
+    app = build_http_app(api=api.url, mcp_path="/mcp", host="127.0.0.1", allowed_hosts=None, allowed_origins=None,
+                         public_url=public, oauth_issuer="https://issuer.example", stateful=False,
+                         oauth_scope="phone:drive")
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.time() + 10
+    while not server.started and time.time() < deadline:
+        time.sleep(0.05)
+    assert server.started
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(5)
+
+
+def test_oauth_mode_publishes_resource_metadata(oauth_hosted):
+    found = None
+    for path in ("/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource"):
+        try:
+            with urllib.request.urlopen(f"{oauth_hosted}{path}", timeout=5) as r:
+                found = json.loads(r.read())
+                break
+        except urllib.error.HTTPError:
+            continue
+    assert found, "no protected resource metadata served"
+    assert found["authorization_servers"] == ["https://issuer.example"]
+    assert found["scopes_supported"] == ["phone:drive"]
+    assert found["resource"].rstrip("/") == f"{oauth_hosted}/mcp"
+
+
+def test_oauth_mode_challenge_names_the_metadata(oauth_hosted):
+    req = urllib.request.Request(f"{oauth_hosted}/mcp", data=b"{}", method="POST",
+                                 headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req, timeout=5)
+    assert e.value.code == 401
+    challenge = e.value.headers["WWW-Authenticate"]
+    assert challenge.startswith("Bearer") and "resource_metadata=" in challenge
+
+
+async def test_oauth_mode_still_takes_an_api_key(oauth_hosted, api):
+    async with httpx2.AsyncClient(headers={"Authorization": "Bearer pck_test"}, timeout=30) as http:
+        async with streamable_http_client(f"{oauth_hosted}/mcp", http_client=http) as (read, write, *_rest):
+            async with ClientSession(read, write) as s:
+                await s.initialize()
+                r = await s.call_tool("phone_list_available_devices", {})
+    assert not r.is_error and "No phone is running" in text_of(r)
+    assert ("GET", "/me", "pck_test") in api.requests          # the verifier asked the API
+
+
+def test_oauth_mode_refuses_a_bearer_the_api_refuses(oauth_hosted):
+    req = urllib.request.Request(f"{oauth_hosted}/mcp", data=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+                                 method="POST", headers={"Content-Type": "application/json",
+                                                         "Accept": "application/json, text/event-stream",
+                                                         "Authorization": "Bearer pck_nope"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req, timeout=5)
+    assert e.value.code == 401
