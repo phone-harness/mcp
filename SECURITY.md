@@ -1,6 +1,6 @@
 # Security
 
-Report a vulnerability to security@phone-harness.com. Please do not open a
+Report a vulnerability to support@phone-harness.com. Please do not open a
 public issue for it. You will hear back within three business days.
 
 ## What this server is
