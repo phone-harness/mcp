@@ -165,6 +165,8 @@ async def test_back_on_an_iphone_explains_itself(api):
         assert r.is_error and "no Back button" in text_of(r)
         r = await s.call_tool("phone_list_apps", {"device": sid})
         assert r.is_error and "phone_launch_app" in text_of(r)
+        r = await s.call_tool("phone_get_foreground_app", {"device": sid})
+        assert r.is_error and "does not report which app" in text_of(r)
 
 
 async def test_apps(api):

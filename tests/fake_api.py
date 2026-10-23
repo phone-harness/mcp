@@ -260,6 +260,8 @@ class FakeCloud:
                 raise _Reply(400, {"error": "apps.launch did not accept those arguments"})
             return "com.example." + str(kw["name"]).lower()
         if op == "apps.current":
+            if s["platform"] == "ios":      # the iPhone host's own wording for an op it has but cannot do
+                raise _Reply(400, {"error": "operation is unavailable on this phone"})
             return "com.example.mock"
         if op == "apps.list":
             return ["com.example.mock", "com.android.chrome"]

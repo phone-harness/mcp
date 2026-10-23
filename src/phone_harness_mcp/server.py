@@ -41,7 +41,9 @@ BUTTONS = {
 }
 NO_BACK = ("This phone has no Back button (an iPhone). Use the app's own back control, usually at the top "
            "left, or swipe right from the left edge of the screen.")
-NO_APP_LIST = "This phone does not list its apps (an iPhone). Launch one by its name with phone_launch_app."
+NO_APP_LIST = "This phone does not list its apps. Launch one by its name with phone_launch_app."
+NO_FOREGROUND = ("This phone does not report which app is in front. Take a screenshot or list the elements on screen "
+                 "to see where you are.")
 
 
 def stdio_cloud(credentials, url: str | None = None):
@@ -303,7 +305,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     @server.tool(name="phone_press_button", title="Press a button", annotations=TOUCH)
     async def press_button(ctx: Context, device: str, button: Literal["HOME", "BACK", "APP_SWITCHER", "ENTER"]) -> str:
-        """Press a system button: HOME, BACK (Android only), APP_SWITCHER, or ENTER."""
+        """Press a system button: HOME, BACK (Android; an iPhone has none), APP_SWITCHER, or ENTER."""
         op, kw = BUTTONS[button]
         try:
             await _thread(phones(ctx).op, device, op, **kw)
@@ -315,7 +317,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     @server.tool(name="phone_list_apps", title="List apps", annotations=READ_ONLY)
     async def list_apps(ctx: Context, device: str) -> str:
-        """List the apps installed on the phone (Android: package ids). An iPhone does not expose its app list."""
+        """List the apps installed on the phone: package ids on Android, bundle ids on an iPhone. Any of them can be passed to phone_launch_app."""
         try:
             apps = await _thread(phones(ctx).op, device, "apps.list", include_system=False)
         except Unsupported:
@@ -331,8 +333,15 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     @server.tool(name="phone_get_foreground_app", title="Foreground app", annotations=READ_ONLY)
     async def get_foreground_app(ctx: Context, device: str) -> str:
-        """Which app is in front right now."""
-        current = await _thread(phones(ctx).op, device, "apps.current")
+        """Which app is in front right now. Not every phone reports it; then take a screenshot instead."""
+        try:
+            current = await _thread(phones(ctx).op, device, "apps.current")
+        except Unsupported:
+            raise PhoneError(NO_FOREGROUND) from None
+        except PhoneError as e:
+            if "unavailable" in str(e):
+                raise PhoneError(NO_FOREGROUND) from None
+            raise
         return f"Foreground app: {current}" if current else "No app is in the foreground; the phone is on its home screen."
 
     return server
