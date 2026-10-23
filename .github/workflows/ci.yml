@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.10", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --python ${{ matrix.python }}
+      - run: uv run pytest
+      - run: uv run phone-harness-mcp --help
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t phone-harness-mcp .
+      - name: the container answers /health
+        run: |
+          docker run -d --rm -p 8000:8000 --name mcp phone-harness-mcp --port 8000 --host 0.0.0.0 --allowed-hosts '*'
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8000/health && break; sleep 0.5; done
+          curl -fs http://127.0.0.1:8000/health | grep -q '"ok": true'
+          docker stop mcp

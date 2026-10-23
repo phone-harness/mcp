@@ -1,0 +1,50 @@
+[project]
+name = "phone-harness-mcp"
+version = "0.1.0"
+description = "MCP server for Phone Harness Cloud: let any MCP client drive a real iPhone or Android over HTTPS"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+keywords = ["mcp", "model-context-protocol", "iphone", "android", "automation", "agent", "cloud-phone", "phone-harness"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    "mcp>=2.3,<3",
+    "click>=8.1",
+    "pillow>=10",
+]
+
+[project.urls]
+Homepage = "https://phone-harness.com"
+Documentation = "https://phone-harness.com/docs"
+Repository = "https://github.com/phone-harness/mcp"
+Issues = "https://github.com/phone-harness/mcp/issues"
+
+[project.scripts]
+phone-harness-mcp = "phone_harness_mcp.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/phone_harness_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE", "CHANGELOG.md", "SECURITY.md", "server.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

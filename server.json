@@ -1,0 +1,46 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.phone-harness/mcp",
+  "title": "Phone Harness",
+  "description": "Drive a real iPhone or Android in Phone Harness Cloud over HTTPS: screenshots, taps, typing, apps",
+  "repository": {
+    "url": "https://github.com/phone-harness/mcp",
+    "source": "github"
+  },
+  "websiteUrl": "https://phone-harness.com",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "phone-harness-mcp",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "PHONE_HARNESS_API_KEY",
+          "description": "Phone Harness Cloud API key (pck_…). Optional when the machine is signed in with `phone-harness cloud login`.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.phone-harness.com/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer <Phone Harness Cloud API key>",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
