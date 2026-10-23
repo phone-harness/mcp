@@ -266,6 +266,22 @@ Behind a reverse proxy pass the public hostname so the Host header is
 checked (DNS-rebinding protection): `--host 0.0.0.0 --allowed-hosts mcp.example.com`.
 `mcp.phone-harness.com` runs exactly this binary.
 
+### Vercel
+
+The repo is also a Vercel project: `app.py` exposes the same server as one
+Python function, stateless, answering JSON. Import the repo in Vercel, add the
+domain, done. `mcp.phone-harness.com` runs this way.
+
+| Environment variable | Default | Means |
+| --- | --- | --- |
+| `PHONE_HARNESS_CLOUD_API` | `https://api.phone-harness.com` | The API to forward to. |
+| `PHONE_HARNESS_MCP_ALLOWED_HOSTS` | `*` | Host header check; off on Vercel, whose edge owns routing. |
+| `PHONE_HARNESS_MCP_OAUTH_ISSUER` | unset | Set to the OAuth authorization server to publish protected-resource metadata. Unset means API keys only. |
+| `PHONE_HARNESS_MCP_PUBLIC_URL` | unset | The URL clients use, required with the issuer. |
+
+`vercel.json` sets `maxDuration` to 300 s so `phone_start_device` can wait
+for a phone to boot.
+
 ### Docker
 
 ```bash

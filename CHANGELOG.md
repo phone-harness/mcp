@@ -15,3 +15,5 @@ First release: cloud phones only.
   publishes protected-resource metadata and verifies tokens through the API.
 - A phone busy with another op (409) is retried for up to 12 s; a 503 from the
   phone's input service once after 2 s.
+- `app.py` and `vercel.json`: the hosted server as a Vercel Function, configured
+  by environment variables.

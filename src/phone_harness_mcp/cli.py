@@ -61,6 +61,11 @@ def build_http_app(*, api: str | None, mcp_path: str, host: str, allowed_hosts: 
     async def health(request: Request):
         return JSONResponse({"ok": True, "version": __version__})
 
+    @server.custom_route("/", methods=["GET"])
+    async def index(request: Request):
+        return JSONResponse({"name": "phone-harness", "version": __version__, "mcp": mcp_path,
+                             "docs": "https://github.com/phone-harness/mcp"})
+
     app = server.streamable_http_app(streamable_http_path=mcp_path, json_response=True, stateless_http=not stateful,
                                      transport_security=_security(host, allowed_hosts, allowed_origins), host=host)
     if not oauth_issuer:

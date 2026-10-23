@@ -19,6 +19,7 @@ dependencies = [
     "mcp>=2.3,<3",
     "click>=8.1",
     "pillow>=10",
+    "starlette>=0.40",      # already behind mcp; named so Vercel sees an ASGI app
 ]
 
 [project.urls]
@@ -43,7 +44,7 @@ build-backend = "hatchling.build"
 packages = ["src/phone_harness_mcp"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "README.md", "LICENSE", "CHANGELOG.md", "SECURITY.md", "server.json"]
+include = ["src", "tests", "README.md", "LICENSE", "CHANGELOG.md", "SECURITY.md", "server.json", "app.py", "vercel.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

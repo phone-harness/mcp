@@ -102,3 +102,51 @@ async def test_a_bad_bearer_is_the_apis_refusal(hosted, api):
                 await s.initialize()
                 r = await s.call_tool("phone_list_available_devices", {})
     assert r.is_error and "refused the credential" in text_of(r)
+
+
+@pytest.fixture
+def vercel_app(api, monkeypatch):
+    """The Vercel entrypoint, configured through the environment like the function is."""
+    import importlib
+    import phone_harness_mcp.vercel as vercel
+    monkeypatch.setenv("PHONE_HARNESS_CLOUD_API", api.url)
+    monkeypatch.delenv("PHONE_HARNESS_MCP_OAUTH_ISSUER", raising=False)
+    module = importlib.reload(vercel)
+    port = free_port()
+    server = uvicorn.Server(uvicorn.Config(module.app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.time() + 10
+    while not server.started and time.time() < deadline:
+        time.sleep(0.05)
+    assert server.started
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(5)
+
+
+def test_vercel_entrypoint_serves_index_health_and_a_401(vercel_app):
+    with urllib.request.urlopen(f"{vercel_app}/", timeout=5) as r:
+        body = json.loads(r.read())
+    assert body["mcp"] == "/mcp" and body["version"] == __version__
+    with urllib.request.urlopen(f"{vercel_app}/health", timeout=5) as r:
+        assert json.loads(r.read())["ok"] is True
+    req = urllib.request.Request(f"{vercel_app}/mcp", data=b"{}", method="POST",
+                                 headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
+    with pytest.raises(urllib.error.HTTPError) as e:
+        urllib.request.urlopen(req, timeout=5)
+    assert e.value.code == 401
+
+
+async def test_vercel_entrypoint_forwards_the_bearer(vercel_app, api):
+    # Any Host header is accepted: Vercel's edge owns routing, so the check is off there.
+    async with httpx2.AsyncClient(headers={"Authorization": "Bearer pck_test", "Host": "mcp.phone-harness.com"},
+                                  timeout=30) as http:
+        async with streamable_http_client(f"{vercel_app}/mcp", http_client=http) as (read, write, *_rest):
+            async with ClientSession(read, write) as s:
+                await s.initialize()
+                r = await s.call_tool("phone_list_available_devices", {})
+    assert not r.is_error and "No phone is running" in text_of(r)
+    assert {b for _m, _p, b in api.requests} == {"pck_test"}
