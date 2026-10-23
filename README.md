@@ -1,11 +1,10 @@
 # Phone Harness MCP
 
-**[Phone Harness](https://phone-harness.com)** · let your agent drive a real phone in the cloud.
-
-A [Model Context Protocol](https://modelcontextprotocol.io) server for
-**Phone Harness Cloud**: a real iPhone or an Android, reached over HTTPS. The
-agent sees the screen, taps, types, swipes, opens apps and reads the result.
-Nothing to pair, no adb, no Mac required, any OS.
+The official [Model Context Protocol](https://modelcontextprotocol.io) server
+for **[Phone Harness](https://phone-harness.com)**. It connects AI agents to
+real phones in Phone Harness Cloud: an iPhone or an Android that the agent
+sees, taps, types on, swipes, and opens apps on, all over HTTPS. Nothing to
+pair, no adb, no Mac required, any OS.
 
 Tool names follow [mobile-mcp](https://github.com/mobile-next/mobile-mcp)
 (`phone_take_screenshot`, `phone_click_on_screen_at_coordinates`, …), so an
