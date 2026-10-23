@@ -57,7 +57,13 @@ Local:
 claude mcp add phone-harness -e PHONE_HARNESS_API_KEY=pck_… -- uvx phone-harness-mcp
 ```
 
-Hosted:
+Hosted, signing in with OAuth (run `/mcp` afterwards to authenticate):
+
+```bash
+claude mcp add --transport http phone-harness https://mcp.phone-harness.com/mcp
+```
+
+Hosted, with an API key instead:
 
 ```bash
 claude mcp add --transport http phone-harness https://mcp.phone-harness.com/mcp \
@@ -65,10 +71,17 @@ claude mcp add --transport http phone-harness https://mcp.phone-harness.com/mcp 
 ```
 </details>
 
-<details><summary><b>Claude Desktop</b></summary>
+<details><summary><b>Claude.ai and Claude Desktop</b></summary>
 
 Settings → Connectors → Add custom connector, URL `https://mcp.phone-harness.com/mcp`.
+Claude signs in through Phone Harness's own OAuth consent screen; no key to paste.
 Or add the standard config to `claude_desktop_config.json` to run it locally.
+</details>
+
+<details><summary><b>ChatGPT</b></summary>
+
+Add the connector with URL `https://mcp.phone-harness.com/mcp` and sign in when
+prompted; the consent screen asks for the `phone:drive` scope.
 </details>
 
 <details><summary><b>Codex</b></summary>
@@ -248,9 +261,16 @@ uvx phone-harness-mcp --port 8931
 ```
 
 In this mode the server **holds no credential**. Every request must carry
-`Authorization: Bearer <API key>`, which is forwarded unchanged to Phone
-Harness Cloud, so one process can serve many accounts and leaks none. A
-request without a bearer gets a 401 with a `WWW-Authenticate` challenge.
+`Authorization: Bearer …`, an API key or an OAuth access token, which is
+forwarded unchanged to Phone Harness Cloud, so one process can serve many
+accounts and leaks none. A request without a bearer gets a 401 with a
+`WWW-Authenticate` challenge.
+
+With `--oauth-issuer` the server also publishes OAuth protected-resource
+metadata, so clients that support OAuth (Claude.ai, ChatGPT, Claude Code,
+Cursor) discover the authorization server, register themselves, and sign the
+user in through a consent screen that asks for the `phone:drive` scope.
+`mcp.phone-harness.com` runs this way with Clerk as the authorization server.
 
 ```json
 {

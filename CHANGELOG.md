@@ -17,3 +17,5 @@ First release: cloud phones only.
   phone's input service once after 2 s.
 - `app.py` and `vercel.json`: the hosted server as a Vercel Function, configured
   by environment variables.
+- `--oauth-scope` (default `phone:drive`): the scope the protected-resource
+  metadata advertises; the verifier credits it to every bearer the API accepts.
