@@ -1,7 +1,7 @@
 [project]
 name = "phone-harness-mcp"
 version = "0.1.0"
-description = "The official MCP server for Phone Harness: connect AI agents to real iPhones and Androids in the cloud"
+description = "Connect AI agents to real iPhones and Androids"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
