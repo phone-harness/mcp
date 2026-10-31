@@ -119,18 +119,9 @@ Run `/mcp add`, or put this in `~/.copilot/mcp-config.json`:
 
 Add the standard config to `~/.codeium/windsurf/mcp_config.json`.
 
-### Goose
-
-Advanced settings → Extensions → Add custom extension, type STDIO, command
-`uvx phone-harness-mcp`, environment variable `PHONE_HARNESS_API_KEY`.
-
 ### Kiro
 
 Add the standard config to `.kiro/settings/mcp.json`.
-
-### LM Studio
-
-Program → Install → Edit mcp.json, paste the standard config.
 
 ### opencode
 
