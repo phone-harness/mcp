@@ -1,340 +1,100 @@
-# Phone Harness MCP
+# Phone Harness MCP 🔌
 
-**Connect AI agents to real iPhones and Androids.**
+**Give any MCP agent a real iPhone or an Android emulator in the cloud.**
 
-The official [Model Context Protocol](https://modelcontextprotocol.io) server
-for [Phone Harness](https://phone-harness.com). The agent sees the screen,
-taps, types, swipes, and opens apps on a real phone in Phone Harness Cloud,
-all over HTTPS. Nothing to pair, no adb, no Mac required, any OS.
+Add Phone Harness as a custom connector in Claude, ChatGPT, Cursor, Codex, or any MCP client, and your agent can see the screen, tap, type, swipe, and open apps on a real iPhone or an Android emulator.
 
-Tool names follow [mobile-mcp](https://github.com/mobile-next/mobile-mcp)
-(`phone_take_screenshot`, `phone_click_on_screen_at_coordinates`, …), so an
-agent that has driven a phone before already knows how.
+Nothing to install. Paste one URL, sign in, and go:
 
-Use it two ways:
+    https://mcp.phone-harness.com/mcp
 
-- **Run it yourself** with `uvx phone-harness-mcp` over stdio. It signs in as
-  you: an API key, or the sign-in `phone-harness cloud login` left on the machine.
-- **Hosted** at `https://mcp.phone-harness.com/mcp`. Nothing to install; your
-  client sends your API key as a bearer token.
+- **Works in any MCP client.** Claude, ChatGPT, Cursor, Codex, VS Code, and more.
+- **Nothing to set up.** No Mac, no adb, no pairing. Just a URL and a sign-in.
+- **Real iPhones.** Dedicated cloud iPhones, and Android emulators, driven the way a person uses them.
 
-## Requirements
+Sign-in is OAuth and asks for the `phone:drive` scope.
 
-- A Phone Harness Cloud account, and an API key from the
-  [dashboard](https://phone-harness.com/dashboard) (or the
-  [phone-harness CLI](https://github.com/ShawnPana/phone-harness) signed in with
-  `phone-harness cloud login`).
-- Python 3.10+ with [uv](https://docs.astral.sh/uv/) for the local server. The
-  hosted server needs nothing.
+## Add as a custom connector
 
-## Getting started
+### Claude
 
-Most clients take this **standard config**:
+On claude.ai, open **Customize → Connectors** and add a custom connector (**Add → Custom → Web**, or **Add custom connector**). Name it Phone Harness, paste `https://mcp.phone-harness.com/mcp`, choose sign-in rather than No sign in, and add it. On Team and Enterprise, an Owner adds it under **Organization settings → Connectors**; members then connect.
 
-```json
-{
-  "mcpServers": {
-    "phone-harness": {
-      "command": "uvx",
-      "args": ["phone-harness-mcp"],
-      "env": { "PHONE_HARNESS_API_KEY": "pck_…" }
-    }
-  }
-}
-```
-
-Leave out `env` if the machine is already signed in with `phone-harness cloud login`.
-
-[<img src="https://img.shields.io/badge/VS_Code-Install-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white" alt="Install in VS Code">](https://vscode.dev/redirect/mcp/install?name=phone-harness&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22phone-harness-mcp%22%5D%7D)
-[<img src="https://img.shields.io/badge/VS_Code_Insiders-Install-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white" alt="Install in VS Code Insiders">](https://insiders.vscode.dev/redirect/mcp/install?name=phone-harness&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22phone-harness-mcp%22%5D%7D&quality=insiders)
-[<img src="https://img.shields.io/badge/Cursor-Install-000000?style=flat-square&logo=cursor" alt="Install in Cursor">](cursor://anysphere.cursor-deeplink/mcp/install?name=phone-harness&config=eyJjb21tYW5kIjoidXZ4IiwiYXJncyI6WyJwaG9uZS1oYXJuZXNzLW1jcCJdfQ==)
-
-<details><summary><b>Claude Code</b></summary>
-
-Local:
-
-```bash
-claude mcp add phone-harness -e PHONE_HARNESS_API_KEY=pck_… -- uvx phone-harness-mcp
-```
-
-Hosted, signing in with OAuth (run `/mcp` afterwards to authenticate):
+In Claude Code:
 
 ```bash
 claude mcp add --transport http phone-harness https://mcp.phone-harness.com/mcp
 ```
 
-Hosted, with an API key instead:
+Then run `/mcp` and sign in. That saves the server for the current project; add `--scope user` to keep it in every project.
 
-```bash
-claude mcp add --transport http phone-harness https://mcp.phone-harness.com/mcp \
-  --header "Authorization: Bearer pck_…"
-```
-</details>
+### ChatGPT
 
-<details><summary><b>Claude.ai and Claude Desktop</b></summary>
+On ChatGPT web, open **Plugins → + → Add custom MCP server**. Name it, paste `https://mcp.phone-harness.com/mcp`, choose sign-in, acknowledge the warning, and select **Create as a plugin**. Install the plugin, then @ mention it in a chat.
 
-Settings → Connectors → Add custom connector, URL `https://mcp.phone-harness.com/mcp`.
-Claude signs in through Phone Harness's own OAuth consent screen; no key to paste.
-Or add the standard config to `claude_desktop_config.json` to run it locally.
-</details>
+Custom MCP servers on ChatGPT web are for Business, Enterprise, and Edu workspaces. An admin creates the plugin. Pro accounts can connect a custom server for read and fetch tools only, so driving the phone needs Business, Enterprise, or Edu.
 
-<details><summary><b>ChatGPT</b></summary>
+### Cursor
 
-Add the connector with URL `https://mcp.phone-harness.com/mcp` and sign in when
-prompted; the consent screen asks for the `phone:drive` scope.
-</details>
-
-<details><summary><b>Codex</b></summary>
-
-```bash
-codex mcp add phone-harness --env PHONE_HARNESS_API_KEY=pck_… -- uvx phone-harness-mcp
-```
-
-Or in `~/.codex/config.toml`, hosted:
-
-```toml
-[mcp_servers.phone-harness]
-url = "https://mcp.phone-harness.com/mcp"
-bearer_token_env_var = "PHONE_HARNESS_API_KEY"
-```
-</details>
-
-<details><summary><b>Cursor</b></summary>
-
-Click the Cursor badge above, or Settings → MCP → Add new MCP Server and paste
-the standard config into `~/.cursor/mcp.json`. For the hosted server:
+Add this to `~/.cursor/mcp.json` (all projects) or `.cursor/mcp.json` (one project), then restart Cursor. Cursor signs in with OAuth when the server asks.
 
 ```json
 {
   "mcpServers": {
     "phone-harness": {
-      "url": "https://mcp.phone-harness.com/mcp",
-      "headers": { "Authorization": "Bearer pck_…" }
+      "url": "https://mcp.phone-harness.com/mcp"
     }
   }
 }
 ```
-</details>
 
-<details><summary><b>VS Code</b></summary>
-
-Click a VS Code badge above, or:
+### Codex
 
 ```bash
-code --add-mcp '{"name":"phone-harness","command":"uvx","args":["phone-harness-mcp"],"env":{"PHONE_HARNESS_API_KEY":"pck_…"}}'
+codex mcp add phone-harness --url https://mcp.phone-harness.com/mcp
+codex mcp login phone-harness
 ```
-</details>
 
-<details><summary><b>Gemini CLI</b></summary>
-
-Add the standard config under `mcpServers` in `~/.gemini/settings.json`.
-</details>
-
-<details><summary><b>Copilot CLI</b></summary>
-
-Run `/mcp add`, or put this in `~/.copilot/mcp-config.json`:
-
-```json
-{
-  "mcpServers": {
-    "phone-harness": {
-      "type": "local",
-      "command": "uvx",
-      "args": ["phone-harness-mcp"],
-      "env": { "PHONE_HARNESS_API_KEY": "pck_…" },
-      "tools": ["*"]
-    }
-  }
-}
-```
-</details>
-
-<details><summary><b>Windsurf</b></summary>
-
-Add the standard config to `~/.codeium/windsurf/mcp_config.json`.
-</details>
-
-<details><summary><b>Goose</b></summary>
-
-Advanced settings → Extensions → Add custom extension, type STDIO, command
-`uvx phone-harness-mcp`, environment variable `PHONE_HARNESS_API_KEY`.
-</details>
-
-<details><summary><b>Kiro</b></summary>
-
-Add the standard config to `.kiro/settings/mcp.json`.
-</details>
-
-<details><summary><b>LM Studio</b></summary>
-
-Program → Install → Edit mcp.json, paste the standard config.
-</details>
-
-<details><summary><b>opencode</b></summary>
-
-```json
-{
-  "mcp": {
-    "phone-harness": {
-      "type": "local",
-      "command": ["uvx", "phone-harness-mcp"],
-      "environment": { "PHONE_HARNESS_API_KEY": "pck_…" },
-      "enabled": true
-    }
-  }
-}
-```
-</details>
-
-<details><summary><b>Warp</b></summary>
-
-Settings → AI → Manage MCP Servers → + Add, paste the standard config.
-</details>
-
-<details><summary><b>Any other client</b></summary>
-
-Local: command `uvx`, arguments `phone-harness-mcp`, environment `PHONE_HARNESS_API_KEY`.
-Hosted: streamable HTTP at `https://mcp.phone-harness.com/mcp` with header
-`Authorization: Bearer <API key>`.
-</details>
-
-## What the agent does with it
-
-```
-● phone_list_available_devices        → no phone running; an iPhone and an Android are available
-● phone_start_device                  → s_7f3a: Android emulator, 390x844, 30 min
-● phone_launch_app name="Weather"
-● phone_list_elements_on_screen       → "San Francisco" at (195, 212) …
-● phone_take_screenshot               → forecast is up
-● phone_stop_device
-```
+In the Codex IDE extension (gear menu → MCP servers) or the ChatGPT desktop app (Settings → MCP servers): **Add server → Streamable HTTP**, paste the URL, save, restart, and select **Authenticate**.
 
 ## Tools
 
-Every tool but the first two takes `device`, an id from `phone_list_available_devices`.
+The hosted server registers these tools. Every tool except the first two takes `device`, an id from `phone_list_available_devices`.
+
+Cloud Android is pay as you go at 5¢/min. A cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM) and is not billed by the minute. `minutes` on `phone_start_device` is how long the session runs (default 30), not a billing unit.
 
 | Tool | Does |
 | --- | --- |
-| `phone_list_available_devices` | Running phones and their ids, plus the phones the account can start. |
-| `phone_start_device` | Start a phone and wait until it is ready. `platform` + `kind` (`android`/`emulator`, `ios`/`device`), `device_id` for a particular iPhone, `minutes` (default 30). Rented phones bill by the minute. |
-| `phone_stop_device` | End the session; billing stops. |
-| `phone_get_screen_size` | The coordinate space taps use. |
-| `phone_take_screenshot` | JPEG, long side ≤ `max_size` (1024) or `scale`, preceded by a line that converts image points to screen coordinates. |
-| `phone_save_screenshot` | Write a PNG or JPEG to a path. Local server only. |
-| `phone_list_elements_on_screen` | Visible text with tap-ready centers (`text` or `json`). Accessibility tree on Android, text recognition on iPhone. |
-| `phone_click_on_screen_at_coordinates` | Tap `x, y`. |
-| `phone_long_press_on_screen_at_coordinates` | Hold for `duration` ms (800). |
-| `phone_swipe_on_screen` | `direction` is the finger's motion; from `x, y` or the center, `distance` px or 40% of the screen. |
-| `phone_type_keys` | Type into the focused field; `submit` presses Enter. |
-| `phone_press_button` | `HOME`, `BACK` (Android), `APP_SWITCHER`, `ENTER`. |
-| `phone_list_apps` | Installed apps (Android). |
-| `phone_launch_app` | Open an app by name or package id. |
-| `phone_get_foreground_app` | Which app is in front. |
+| `phone_list_available_devices` | Running phones and their ids, the phones the account can start, and the account balance when the API reports one. |
+| `phone_start_device` | Start a phone and wait until it is ready. With nothing named, a temporary Android emulator starts. `platform` and `kind` go together (`android`/`emulator`, or `ios`/`device` for the account's iPhone). `device_id` picks a particular iPhone or a saved Android phone (apps and logins kept). |
+| `phone_stop_device` | End the session. Anything not saved on the phone is lost. Stopping cloud Android stops the per-minute charge. |
+| `phone_get_screen_size` | Screen size in the coordinate space taps and swipes use. |
+| `phone_take_screenshot` | JPEG of the screen. Long side at most `max_size` (default 1024), or `scale`. The text before the image converts a point in the image to screen coordinates. |
+| `phone_list_elements_on_screen` | Visible text with tap-ready centers (`text` or `json`). Accessibility tree on Android; text recognition on iPhone. |
+| `phone_click_on_screen_at_coordinates` | Tap `x`, `y`. |
+| `phone_long_press_on_screen_at_coordinates` | Press and hold `x`, `y` for `duration` milliseconds (default 800, clamped to 100–10000). |
+| `phone_swipe_on_screen` | Swipe. `direction` is the way the finger moves (`up` reveals what is below). From `x`, `y` or the center, for `distance` pixels or 40% of the screen. |
+| `phone_type_keys` | Type `text` into the focused field. `submit` presses Enter. |
+| `phone_press_button` | `HOME`, `BACK` (Android only), `APP_SWITCHER`, or `ENTER`. |
+| `phone_list_apps` | Installed apps: package ids on Android, bundle ids on an iPhone, when the phone can list them. |
+| `phone_launch_app` | Open an app by the name on its icon, or on Android by package id. |
+| `phone_get_foreground_app` | Which app is in front, when the phone reports it. |
 
-Not yet: opening a URL (`url.open` is not served by the session route today),
-installing apps, clipboard, screen recording.
+There is no tool that opens a URL. A local stdio server also registers `phone_save_screenshot` (write a PNG or JPEG on that machine). Tool names follow [mobile-mcp](https://github.com/mobile-next/mobile-mcp).
 
-## Configuration
+## Run it yourself
 
-```
-phone-harness-mcp [OPTIONS]
-
-  --api-key KEY             API key. Default $PHONE_HARNESS_API_KEY, else the CLI's sign-in. stdio only.
-  --api-url URL             Default $PHONE_HARNESS_CLOUD_API or https://api.phone-harness.com
-  --port PORT               Serve streamable HTTP instead of stdio (see below)
-  --host HOST               Interface for --port  [default: 127.0.0.1]
-  --path PATH               MCP endpoint path  [default: /mcp]
-  --allowed-hosts HOSTS     Host header values to accept; '*' disables the check
-  --allowed-origins ORIGINS Origin header values to accept
-  --public-url URL          The URL clients reach the server at (with --oauth-issuer)
-  --oauth-issuer URL        Publish OAuth protected-resource metadata for this issuer
-  --oauth-scope SCOPE       The scope advertised to OAuth clients  [default: phone:drive]
-  --stateful                HTTP mode: one MCP session per client
-```
-
-## Standalone and hosted server
-
-`--port` serves streamable HTTP at `/mcp`:
-
-```bash
-uvx phone-harness-mcp --port 8931
-```
-
-In this mode the server **holds no credential**. Every request must carry
-`Authorization: Bearer …`, an API key or an OAuth access token, which is
-forwarded unchanged to Phone Harness Cloud, so one process can serve many
-accounts and leaks none. A request without a bearer gets a 401 with a
-`WWW-Authenticate` challenge.
-
-With `--oauth-issuer` the server also publishes OAuth protected-resource
-metadata, so clients that support OAuth (Claude.ai, ChatGPT, Claude Code,
-Cursor) discover the authorization server, register themselves, and sign the
-user in through a consent screen that asks for the `phone:drive` scope.
-`mcp.phone-harness.com` runs this way with Clerk as the authorization server.
-
-```json
-{
-  "mcpServers": {
-    "phone-harness": {
-      "url": "http://localhost:8931/mcp",
-      "headers": { "Authorization": "Bearer pck_…" }
-    }
-  }
-}
-```
-
-Behind a reverse proxy pass the public hostname so the Host header is
-checked (DNS-rebinding protection): `--host 0.0.0.0 --allowed-hosts mcp.example.com`.
-`mcp.phone-harness.com` runs exactly this binary.
-
-### Vercel
-
-The repo is also a Vercel project: `app.py` exposes the same server as one
-Python function, stateless, answering JSON. Import the repo in Vercel, add the
-domain, done. `mcp.phone-harness.com` runs this way.
-
-| Environment variable | Default | Means |
-| --- | --- | --- |
-| `PHONE_HARNESS_CLOUD_API` | `https://api.phone-harness.com` | The API to forward to. |
-| `PHONE_HARNESS_MCP_ALLOWED_HOSTS` | `*` | Host header check; off on Vercel, whose edge owns routing. |
-| `PHONE_HARNESS_MCP_OAUTH_ISSUER` | unset | Set to the OAuth authorization server to publish protected-resource metadata. Unset means API keys only. |
-| `PHONE_HARNESS_MCP_PUBLIC_URL` | unset | The URL clients use, required with the issuer. |
-| `PHONE_HARNESS_MCP_OAUTH_SCOPE` | `phone:drive` | The scope advertised to OAuth clients. |
-
-`vercel.json` sets `maxDuration` to 300 s so `phone_start_device` can wait
-for a phone to boot.
-
-### Docker
-
-```bash
-docker build -t phone-harness-mcp .
-docker run --rm -p 8000:8000 phone-harness-mcp --port 8000 --host 0.0.0.0 --allowed-hosts '*'
-```
-
-## Security
-
-- The server is a thin HTTPS client. It never holds a phone, and over HTTP it
-  never holds a credential: each request's bearer is the only identity.
-- Over stdio it uses this machine's sign-in, like any local MCP server; it is
-  not a security boundary between you and your own account.
-- Screenshots and text read from the phone pass through unlogged. API keys
-  are never written to logs.
-- Phones are rented by the minute. The `phone_start_device` description says
-  so; turn on your client's tool-approval setting if you want to confirm it.
-
-Report vulnerabilities per [SECURITY.md](SECURITY.md).
+`uvx phone-harness-mcp`, self-hosting, Vercel, Docker, and configuration are in [docs/self-hosting.md](docs/self-hosting.md).
 
 ## Development
 
 ```bash
 uv sync
-uv run pytest            # a fake Phone Harness Cloud API; no account needed
+uv run pytest
 uv run phone-harness-mcp --help
 ```
 
-Layout: `src/phone_harness_mcp/{cli,server,phone,cloud,screenshots,auth}.py`.
-`cloud.py` is the HTTP client, `phone.py` turns API answers into sentences for
-the model, `server.py` is the tool set, `auth.py` is hosted-mode bearer handling.
+Report vulnerabilities per [SECURITY.md](SECURITY.md).
 
 ## License
 

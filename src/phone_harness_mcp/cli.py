@@ -110,7 +110,7 @@ def build_http_app(*, api: str | None, mcp_path: str, host: str, allowed_hosts: 
               "each request on its own.")
 def main(api_key, api_url, port, host, mcp_path, allowed_hosts, allowed_origins, public_url, oauth_issuer,
          oauth_scope, stateful):
-    """MCP server for Phone Harness Cloud: drive a real iPhone or Android from any MCP client."""
+    """MCP server for Phone Harness Cloud: drive a real iPhone or an Android emulator from any MCP client."""
     api = (api_url or globals()["api_url"]()).rstrip("/")
     if port is None:
         server = build_server(cloud_for=stdio_cloud(local_credentials(api_key), api), allow_files=True)
