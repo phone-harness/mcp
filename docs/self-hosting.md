@@ -4,7 +4,7 @@ The hosted server is [https://mcp.phone-harness.com/mcp](https://mcp.phone-harne
 
 The server does not hold a phone. Every tool call goes to Phone Harness Cloud over HTTPS. An iPhone there is a real device (`ios` / `device`). Android is an emulator (`android` / `emulator`): a temporary one by default, or a saved phone that keeps apps and logins.
 
-Cloud Android is pay as you go at 5¢/min. A cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM) and is not billed by the minute.
+Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you go. A Cloud iPhone is a flat monthly subscription, not billed by the minute: $80/mo, or $100/mo with an eSIM, with 20% off billed annually ($64/mo, or $80/mo with an eSIM). See [phone-harness.com/pricing](https://phone-harness.com/pricing) for current rates.
 
 ## Requirements
 
@@ -234,9 +234,12 @@ docker run --rm -p 8000:8000 phone-harness-mcp --port 8000 --host 0.0.0.0 --allo
   not a security boundary between you and your own account.
 - Screenshots and text read from the phone pass through unlogged. API keys
   are never written to logs.
-- Cloud Android is pay as you go at 5¢/min. A cloud iPhone is a flat monthly
-  subscription ($80/mo, $100/mo with eSIM) and is not billed by the minute.
-  The `phone_start_device` description says so; turn on your client's
+- Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as
+  you go. A Cloud iPhone is a flat monthly subscription, not billed by the
+  minute: $80/mo, or $100/mo with an eSIM, with 20% off billed annually
+  ($64/mo, or $80/mo with an eSIM). See
+  [phone-harness.com/pricing](https://phone-harness.com/pricing) for current
+  rates. The `phone_start_device` description says so; turn on your client's
   tool-approval setting if you want to confirm a start.
 
 Report vulnerabilities per [SECURITY.md](../SECURITY.md).

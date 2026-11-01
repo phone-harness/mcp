@@ -197,7 +197,7 @@ Any other client that can add a remote streamable HTTP server uses the URL above
 
 The hosted server registers these tools. Every tool except the first two takes `device`, an id from `phone_list_available_devices`.
 
-Cloud Android is pay as you go at 5¢/min. A cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM) and is not billed by the minute. `minutes` on `phone_start_device` is how long the session runs (default 30), not a billing unit.
+Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you go. A Cloud iPhone is a flat monthly subscription, not billed by the minute: $80/mo, or $100/mo with an eSIM, with 20% off billed annually ($64/mo, or $80/mo with an eSIM). `minutes` on `phone_start_device` is how long the session runs (default 30), not a billing unit. See [phone-harness.com/pricing](https://phone-harness.com/pricing) for current rates.
 
 | Tool | Does |
 | --- | --- |
