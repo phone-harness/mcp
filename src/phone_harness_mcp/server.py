@@ -26,7 +26,7 @@ from .phone import DEFAULT_MINUTES, READY_WAIT, PhoneError, Phones, Unsupported,
 
 INSTRUCTIONS = """Drive a Phone Harness Cloud phone: a real iPhone or an Android emulator, reached over HTTPS.
 
-Start with phone_list_available_devices. If a phone is running, pass its id as `device` to every other tool. If none is, phone_start_device starts one. Cloud Android is pay as you go at 5 cents per minute; a cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM) and is not billed by the minute. Call phone_stop_device when the task is done.
+Start with phone_list_available_devices. If a phone is running, pass its id as `device` to every other tool. If none is, phone_start_device starts one. Cloud Android is pay as you go at 5 cents per minute; a cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM, or 20% off billed annually at $64/mo, $80/mo with eSIM) and is not billed by the minute. Call phone_stop_device when the task is done.
 
 To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked."""
 
@@ -144,7 +144,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
                            kind: Literal["emulator", "device"] | None = None,
                            device_id: str | None = None,
                            minutes: int = DEFAULT_MINUTES) -> str:
-        """Start a phone and wait until it is ready; returns its device id. With nothing named, the account's default phone (a temporary Android emulator) starts. `platform` and `kind` go together (android/emulator, or ios/device for the account's own iPhone). `device_id` is an id from phone_list_available_devices: a particular iPhone, or the account's saved Android phone (apps and logins kept between sessions). `minutes` (default 30) is how long the session runs. Cloud Android bills 5 cents per minute; a cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM) and is not billed by the minute. Stop it with phone_stop_device when done."""
+        """Start a phone and wait until it is ready; returns its device id. With nothing named, the account's default phone (a temporary Android emulator) starts. `platform` and `kind` go together (android/emulator, or ios/device for the account's own iPhone). `device_id` is an id from phone_list_available_devices: a particular iPhone, or the account's saved Android phone (apps and logins kept between sessions). `minutes` (default 30) is how long the session runs. Cloud Android bills 5 cents per minute; a cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM, or 20% off billed annually at $64/mo, $80/mo with eSIM) and is not billed by the minute. Stop it with phone_stop_device when done."""
         if (platform is None) != (kind is None):
             raise PhoneError("platform and kind go together: android with emulator, or ios with device.")
         ph = phones(ctx)
