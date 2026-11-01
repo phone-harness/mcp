@@ -35,12 +35,28 @@ async def test_hosted_server_has_no_file_tool(api):
     assert "phone_save_screenshot" not in {t.name for t in tools.tools}
 
 
+async def test_subscription_iphone_balance_is_money_alone(api):
+    api.me_patch = {"balance_cents": 3415, "price_cents_per_minute": 5, "billing_mode": "disabled"}
+    async with connected(stdio_server(api)) as s:
+        text = text_of(await s.call_tool("phone_list_available_devices", {}))
+    balance = next(line for line in text.splitlines() if line.startswith("Balance:"))
+    assert balance == "Balance: $34.15"
+
+
+async def test_missing_billing_mode_is_metered(api):
+    api.me_patch = {"balance_cents": 3415, "price_cents_per_minute": 5, "billing_mode": None}
+    async with connected(stdio_server(api)) as s:
+        text = text_of(await s.call_tool("phone_list_available_devices", {}))
+    balance = next(line for line in text.splitlines() if line.startswith("Balance:"))
+    assert balance == "Balance: $34.15 (about 683 min at $0.05/min)"
+
+
 async def test_list_then_start_then_list(api):
     async with connected(stdio_server(api)) as s:
         before = text_of(await s.call_tool("phone_list_available_devices", {}))
         assert "No phone is running" in before
         assert "My iPhone" in before and "device_id=iph-a1b2c3" in before
-        assert "Balance: $12.50 at $0.05 per minute" in before
+        assert "Balance: $12.50 (about 250 min at $0.05/min)" in before
 
         sid = await start(s)
         assert sid == "s_0001"

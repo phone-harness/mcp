@@ -90,14 +90,31 @@ def _devices_text(live: list[dict], me: dict) -> str:
             if entry.get("temporary"):
                 bits.append("temporary, billed per minute")
             lines.append(f"- {entry.get('label') or 'phone'}: " + ", ".join(bits))
-    balance = me.get("balance_cents")
-    if isinstance(balance, (int, float)) and me.get("billing_mode") != "disabled":
-        line = f"Balance: ${balance / 100:.2f}"
-        price = me.get("price_cents_per_minute")
-        if isinstance(price, (int, float)) and price:
-            line += f" at ${price / 100:.2f} per minute"
+    line = _balance_line(me)
+    if line:
         lines.extend(["", line])
     return "\n".join(lines)
+
+
+def _balance_line(me: dict) -> str | None:
+    """The account's money, and Android minutes only when usage is metered.
+
+    Cloud Android spends credit at `price_cents_per_minute`. A cloud iPhone is
+    a flat monthly subscription: `/me` then sends `billing_mode` "disabled",
+    and it can still send `price_cents_per_minute`. That rate is not a charge,
+    so the footer stays the dollar balance. A missing `billing_mode` is metered,
+    which is what older service responses look like.
+    """
+    balance = me.get("balance_cents")
+    if not isinstance(balance, (int, float)) or isinstance(balance, bool):
+        return None
+    line = f"Balance: ${balance / 100:.2f}"
+    price = me.get("price_cents_per_minute")
+    metered = me.get("billing_mode") != "disabled"
+    if metered and isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0:
+        minutes = int(balance // price)
+        line += f" (about {minutes} min at ${price / 100:.2f}/min)"
+    return line
 
 
 def _elements_text(boxes: list[dict], bounds: dict | None) -> str:

@@ -55,6 +55,7 @@ class FakeCloud:
         self._n = 0
         self._server = None
         self._thread = None
+        self.me_patch = None          # merged over GET /me; None drops a key
 
     # --- lifecycle --------------------------------------------------------------
 
@@ -178,7 +179,7 @@ class FakeCloud:
         raise _Reply(404, {"error": "not found"})
 
     def me(self, user):
-        return {"uid": user["uid"], "email": user["email"], "balance_cents": 1250, "price_cents_per_minute": 5,
+        body = {"uid": user["uid"], "email": user["email"], "balance_cents": 1250, "price_cents_per_minute": 5,
                 "billing_mode": "credits", "session_limit": 2,
                 "unnamed": {"platform": "android", "kind": "emulator", "temporary": True},
                 "available": [
@@ -187,6 +188,12 @@ class FakeCloud:
                     {"platform": "ios", "kind": "device", "label": "My iPhone", "id": "iph-a1b2c3",
                      "state": "available"},
                 ]}
+        for key, value in (self.me_patch or {}).items():
+            if value is None:
+                body.pop(key, None)
+            else:
+                body[key] = value
+        return body
 
     def create(self, user, body):
         if "provider" in body:
