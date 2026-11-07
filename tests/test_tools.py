@@ -14,6 +14,7 @@ EXPECTED_TOOLS = {
     "phone_list_elements_on_screen", "phone_click_on_screen_at_coordinates",
     "phone_long_press_on_screen_at_coordinates", "phone_swipe_on_screen", "phone_type_keys",
     "phone_press_button", "phone_list_apps", "phone_launch_app", "phone_get_foreground_app",
+    "phone_get_screenshot_url", "phone_start_handoff", "phone_get_handoff", "phone_end_handoff",
 }
 
 
@@ -61,7 +62,8 @@ async def test_list_then_start_then_list(api):
         sid = await start(s)
         assert sid == "s_0001"
         created = api.sessions[sid]["created"]
-        assert created == {"timeout_seconds": 1800}          # nothing named: the account's default phone
+        # nothing named: the account's saved phone
+        assert created == {"timeout_seconds": 1800, "platform": "android", "kind": "emulator", "profile_id": "prof-1"}
 
         after = text_of(await s.call_tool("phone_list_available_devices", {}))
         assert f"{sid}: Android emulator (android/emulator), ready, screen 390x844" in after

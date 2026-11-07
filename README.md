@@ -202,7 +202,7 @@ Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you
 | Tool | Does |
 | --- | --- |
 | `phone_list_available_devices` | Running phones and their ids, the phones the account can start, and the account balance when the API reports one. |
-| `phone_start_device` | Start a phone and wait until it is ready. With nothing named, a temporary Android emulator starts. `platform` and `kind` go together (`android`/`emulator`, or `ios`/`device` for the account's iPhone). `device_id` picks a particular iPhone or a saved Android phone (apps and logins kept). |
+| `phone_start_device` | Start a phone and wait until it is ready. With nothing named, the account's saved Android phone (apps and logins kept), or the session already running it; `temporary: true` starts a throwaway Android emulator instead (see [Compatibility](#compatibility)). `platform` and `kind` go together (`android`/`emulator`, or `ios`/`device` for the account's iPhone). `device_id` picks a particular iPhone or the saved Android phone. |
 | `phone_stop_device` | End the session. Anything not saved on the phone is lost. Stopping cloud Android stops the per-minute charge. |
 | `phone_get_screen_size` | Screen size in the coordinate space taps and swipes use. |
 | `phone_take_screenshot` | JPEG of the screen. Long side at most `max_size` (default 1024), or `scale`. The text before the image converts a point in the image to screen coordinates. |
@@ -215,8 +215,18 @@ Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you
 | `phone_list_apps` | Installed apps: package ids on Android, bundle ids on an iPhone, when the phone can list them. |
 | `phone_launch_app` | Open an app by the name on its icon, or on Android by package id. |
 | `phone_get_foreground_app` | Which app is in front, when the phone reports it. |
+| `phone_get_screenshot_url` | Cloud Android: a short-lived HTTPS link to one screenshot, instead of the image, for showing someone the screen. Works for `minutes` (default 10, at most 15), shows that picture only, and carries no account key. |
+| `phone_start_handoff` | Cloud Android: a one-time link that hands the phone to a person for `minutes` (default 10, at most 30), for passwords, codes and CAPTCHAs. The page shows the screen live and takes their taps, swipes and typing; it carries no account key. |
+| `phone_get_handoff` | Whether the person opened the link, has control, or handed the phone back. |
+| `phone_end_handoff` | Turn the handoff link off and take control back at once. |
 
 There is no tool that opens a URL. A local stdio server also registers `phone_save_screenshot` (write a PNG or JPEG on that machine). Tool names follow [mobile-mcp](https://github.com/mobile-next/mobile-mcp).
+
+### Compatibility
+
+- `phone_start_device` with nothing named now starts the account's **saved** Android phone, or returns the session already running it, instead of a temporary emulator. This applies to every client. Apps and logins carry over between sessions, a second call reuses the running phone rather than starting another, and stopping it saves it (a minute or so) before it can start again. Pass `temporary: true` for the previous behavior; naming `platform`/`kind` or a `device_id` works as before.
+- Against a Phone Harness Cloud that does not offer screenshot links or handoffs yet, those tools say so instead of failing silently. An account without a saved phone gets the temporary emulator as before.
+- The new tools return `structuredContent` with an output schema, and the same link in their text, for clients that read only text.
 
 ## FAQ
 

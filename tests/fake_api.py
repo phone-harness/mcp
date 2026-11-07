@@ -56,6 +56,12 @@ class FakeCloud:
         self._server = None
         self._thread = None
         self.me_patch = None          # merged over GET /me; None drops a key
+        self.profile_id = "prof-1"    # the account's saved phone; None: this service keeps none
+        self.saving_requests = 0      # a stopped saved-phone session stays "closing" this many requests
+        self.links = True             # False: an older service with no screenshot or handoff routes
+        self.shots = {}               # id -> (token, png bytes)
+        self.handoffs = {}            # id -> record, oldest first
+        self.oauth_scopes = {}        # bearer -> its OAuth scope string, for tokens a test's authorization server issued
 
     # --- lifecycle --------------------------------------------------------------
 
@@ -117,19 +123,27 @@ class FakeCloud:
         return data
 
     def handle(self, h, method):
-        path = urllib.parse.urlsplit(h.path).path
+        split = urllib.parse.urlsplit(h.path)
+        path = split.path
         auths = h.headers.get_all("Authorization") or []
         bearer = auths[0][7:] if auths and auths[0].lower().startswith("bearer ") else None
         with self.lock:
             self.requests.append((method, path, bearer))
+            self._tick_closing()
         try:
             if path == "/oauth/token" and method == "POST":
                 return self._token_endpoint(h)
             if path == "/health":
                 return self._send(h, 200, {"ok": True})
+            if path.startswith("/screenshots/") and method == "GET":
+                return self._screenshot(h, path, split.query)
             if len(auths) > 1:
                 raise _Reply(400, {"error": "one Authorization header"})
             user = self.tokens.get(bearer) if bearer else None
+            # Like the API: a self-registered OAuth client's token signs in only
+            # when it carries the scope the MCP server advertises.
+            if user and bearer in self.oauth_scopes and "phone:drive" not in self.oauth_scopes[bearer].split():
+                user = None
             if not user:
                 raise _Reply(401, {"error": "sign in"})
             status, body, headers = self.route(method, path, user, h)
@@ -168,8 +182,18 @@ class FakeCloud:
                 self.tick(s)
                 return 200, self.public(s), None
             if len(parts) == 2 and method == "DELETE":
-                s["state"] = "closed"
+                if s.get("profile") and self.saving_requests:
+                    # the saved phone is being stored: closing, still holding it
+                    s.update(state="closing", close_requested=time.time(), closing_left=self.saving_requests)
+                else:
+                    s["state"] = "closed"
                 return 200, {"released": True}, None
+            if len(parts) == 3 and parts[2] in ("screenshots", "handoffs") and not self.links:
+                raise _Reply(404, {"error": f"no route {method} {path}"})
+            if len(parts) == 3 and parts[2] == "screenshots" and method == "POST":
+                return self.screenshot_link(s, self._body(h))
+            if len(parts) == 3 and parts[2] == "handoffs":
+                return self.handoff_route(s, method, self._body(h) if method == "POST" else {})
             if len(parts) == 3 and parts[2] == "ops" and method == "GET":
                 if s["state"] != "ready":
                     raise _Reply(409, {"error": "the phone is not ready"})
@@ -179,15 +203,22 @@ class FakeCloud:
         raise _Reply(404, {"error": "not found"})
 
     def me(self, user):
+        holder = self._profile_holder()
+        saved = []
+        if self.profile_id:
+            saved = [{"platform": "android", "kind": "emulator", "label": "Saved phone", "id": self.profile_id,
+                      "state": "running" if holder else "stored", "session": holder["id"] if holder else None}]
         body = {"uid": user["uid"], "email": user["email"], "balance_cents": 1250, "price_cents_per_minute": 5,
                 "billing_mode": "credits", "session_limit": 2,
                 "unnamed": {"platform": "android", "kind": "emulator", "temporary": True},
-                "available": [
-                    {"platform": "android", "kind": "emulator", "label": "Saved phone", "id": "prof-1", "state": "stored"},
+                "available": saved + [
                     {"platform": "android", "kind": "emulator", "label": "Android emulator", "temporary": True},
                     {"platform": "ios", "kind": "device", "label": "My iPhone", "id": "iph-a1b2c3",
                      "state": "available"},
                 ]}
+        if self.profile_id:
+            body["profile"] = {"id": self.profile_id, "state": "running" if holder else "stored",
+                               "session": holder["id"] if holder else None}
         for key, value in (self.me_patch or {}).items():
             if value is None:
                 body.pop(key, None)
@@ -203,13 +234,21 @@ class FakeCloud:
         platform, kind = body.get("platform", "android"), body.get("kind", "emulator")
         if (platform, kind) not in (("android", "emulator"), ("ios", "device")):
             raise _Reply(400, {"error": "no phone of that platform and kind is available to this account"})
+        profile = body.get("profile_id")
+        if profile is not None:
+            if profile != self.profile_id:
+                raise _Reply(403, {"error": "That profile belongs to another account"})
+            holder = self._profile_holder()
+            if holder:
+                raise _Reply(409, {"error": "Your phone is already running", "code": "profile_running",
+                                   "session": holder["id"]})
         timeout = int(body.get("timeout_seconds") or 300)
         self._n += 1
         sid = f"s_{self._n:04d}"
         s = {"id": sid, "uid": user["uid"], "state": "provisioning", "platform": platform, "kind": kind,
              "device": "iPhone" if platform == "ios" else "Android emulator", "polls": 0,
              "timeout_seconds": timeout, "expires_at": time.time() + timeout, "created": body,
-             "progress": {"phase": "booting"}}
+             "progress": {"phase": "booting"}, "profile": profile}
         self.sessions[sid] = s
         return 202, self.public(s), None
 
@@ -220,9 +259,77 @@ class FakeCloud:
                 s["state"] = "ready"
                 s.pop("progress", None)
 
+    def _profile_holder(self):
+        """The session holding the saved phone: live, or closing while it is saved."""
+        return next((s for s in self.sessions.values()
+                     if s.get("profile") and s["state"] != "closed"), None)
+
+    def _tick_closing(self):
+        for s in self.sessions.values():
+            if s["state"] == "closing" and s.get("closing_left") is not None:
+                s["closing_left"] -= 1
+                if s["closing_left"] <= 0:
+                    s["state"] = "closed"
+
+    # --- links -------------------------------------------------------------------
+
+    def screenshot_link(self, s, body):
+        if s["state"] != "ready":
+            raise _Reply(409, {"error": "session is not ready"})
+        ttl = body.get("ttl_seconds", 600)
+        if type(ttl) is not int or not 30 <= ttl <= 900:
+            raise _Reply(400, {"error": "ttl_seconds must be a whole number from 30 to 900"})
+        shot = f"{len(self.shots) + 1:016x}"
+        token = "phs_" + base64.urlsafe_b64encode(shot.encode()).decode().rstrip("=")
+        png = base64.b64decode(self._png)
+        self.shots[shot] = (token, png)
+        return 201, {"id": shot, "url": f"{self.url}/screenshots/{shot}.png?token={token}",
+                     "expires_at": time.time() + ttl, "content_type": "image/png", "bytes": len(png),
+                     "width": CAPTURE_SIZE[0], "height": CAPTURE_SIZE[1],
+                     "screen": {"w": BOUNDS["w"], "h": BOUNDS["h"]}}, None
+
+    def _screenshot(self, h, path, query):
+        shot = path.rsplit("/", 1)[1].split(".", 1)[0]
+        token = dict(urllib.parse.parse_qsl(query)).get("token")
+        found = self.shots.get(shot)
+        if not found or found[0] != token:
+            return self._send(h, 404, {"error": "This screenshot link has expired."})
+        h.send_response(200)
+        h.send_header("Content-Type", "image/png")
+        h.send_header("Content-Length", str(len(found[1])))
+        h.end_headers()
+        h.wfile.write(found[1])
+
+    def handoff_route(self, s, method, body):
+        mine = [r for r in self.handoffs.values() if r["sid"] == s["id"]]
+        if method == "POST":
+            if s["state"] != "ready":
+                raise _Reply(409, {"error": "session is not ready"})
+            ttl = body.get("ttl_seconds", 600)
+            if type(ttl) is not int or not 60 <= ttl <= 1800:
+                raise _Reply(400, {"error": "ttl_seconds must be a whole number from 60 to 1800"})
+            for r in mine:
+                if r["state"] in ("waiting", "active"):
+                    r.update(state="revoked", reason="replaced", ended_at=time.time())
+            hid = f"{len(self.handoffs) + 1:016x}"
+            record = {"id": hid, "sid": s["id"], "state": "waiting", "reason": None, "created_at": time.time(),
+                      "expires_at": time.time() + ttl, "claimed_at": None, "ended_at": None, "inputs": 0,
+                      "last_input_at": None}
+            self.handoffs[hid] = record
+            view = {k: v for k, v in record.items() if k != "sid"}
+            return 201, {**view, "url": f"{self.url}/handoff/{hid}?token=phl_{hid}"}, None
+        if method == "GET":
+            return 200, {"handoffs": [{k: v for k, v in r.items() if k != "sid"} for r in reversed(mine)]}, None
+        if method == "DELETE":
+            live = [r for r in mine if r["state"] in ("waiting", "active")]
+            for r in live:
+                r.update(state="revoked", reason="revoked", ended_at=time.time())
+            return 200, {"revoked": len(live)}, None
+        raise _Reply(404, {"error": "not found"})
+
     @staticmethod
     def public(s):
-        out = {k: v for k, v in s.items() if k not in ("uid", "polls", "created")}
+        out = {k: v for k, v in s.items() if k not in ("uid", "polls", "created", "closing_left")}
         out["screen"] = {"w": BOUNDS["w"], "h": BOUNDS["h"]} if s["state"] == "ready" else None
         return out
 

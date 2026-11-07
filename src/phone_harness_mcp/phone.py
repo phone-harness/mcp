@@ -32,6 +32,18 @@ class Unsupported(PhoneError):
     """This phone cannot do that, and retrying will not help."""
 
 
+class ProfileRunning(PhoneError):
+    """The account's saved phone is already held by a session: `session` names it."""
+
+    def __init__(self, message: str, session: str | None):
+        super().__init__(message)
+        self.session = session
+
+
+class NotOffered(PhoneError):
+    """The service this server talks to has no such route (an older deployment)."""
+
+
 def minutes_left(session: dict) -> int | None:
     expires = session.get("expires_at")
     if not expires:
@@ -83,6 +95,25 @@ class Phones:
     def stop(self, sid: str) -> dict:
         return self._call("DELETE", f"/sessions/{sid}", sid=sid)
 
+    # --- links a person can be sent -----------------------------------------------
+
+    def screenshot_link(self, sid: str, ttl: int | None = None) -> dict:
+        """Capture the screen and get a short-lived HTTPS link to that one image."""
+        body = {} if ttl is None else {"ttl_seconds": int(ttl)}
+        return self._call("POST", f"/sessions/{sid}/screenshots", body, sid=sid, feature="screenshot links")
+
+    def handoff(self, sid: str, ttl: int | None = None) -> dict:
+        """A link that hands control of the screen to a person for a few minutes."""
+        body = {} if ttl is None else {"ttl_seconds": int(ttl)}
+        return self._call("POST", f"/sessions/{sid}/handoffs", body, sid=sid, feature="handoffs")
+
+    def handoffs(self, sid: str) -> list[dict]:
+        found = self._call("GET", f"/sessions/{sid}/handoffs", sid=sid, feature="handoffs")
+        return [h for h in (found.get("handoffs") or []) if isinstance(h, dict)]
+
+    def end_handoffs(self, sid: str) -> int:
+        return int(self._call("DELETE", f"/sessions/{sid}/handoffs", sid=sid, feature="handoffs").get("revoked") or 0)
+
     # --- ops ------------------------------------------------------------------
 
     def ops(self, sid: str) -> list[str]:
@@ -128,16 +159,20 @@ class Phones:
 
     # --- errors ---------------------------------------------------------------
 
-    def _call(self, method, path, body=None, sid=None):
+    def _call(self, method, path, body=None, sid=None, feature=None):
         try:
             return self.cloud.request(method, path, body)
         except CloudError as e:
+            if feature and e.status == 404 and e.error.startswith("no route "):
+                raise NotOffered(f"This Phone Harness Cloud does not offer {feature} yet.") from None
             raise self._translate(e, sid) from None
         except (NotSignedIn, Unreachable) as e:
             raise PhoneError(str(e)) from None
 
     @staticmethod
     def _translate(e: CloudError, sid: str | None) -> PhoneError:
+        if e.status == 409 and e.code == "profile_running":
+            return ProfileRunning(e.error, e.body.get("session") if isinstance(e.body.get("session"), str) else None)
         if e.status == 401:
             return PhoneError(f"Phone Harness Cloud refused the credential ({e.error}). Check the API key, or run "
                               "`phone-harness cloud login` again.")
