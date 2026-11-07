@@ -69,11 +69,15 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class KeikiStyleClient:
     def __init__(self, mcp_url: str, redirect_uri: str = KEIKI_REDIRECT, client_name: str = "Keiki",
-                 scope: str | None = None):
+                 scope: str | None = None, rewrite=None):
+        """`rewrite(url) -> url` is applied to every address the server's
+        metadata hands back before it is fetched: for running this on the host
+        behind a proxy, where the public address does not reach back in."""
         self.mcp_url = mcp_url
         self.redirect_uri = redirect_uri
         self.client_name = client_name
         self.scope_override = scope
+        self.rewrite = rewrite or (lambda url: url)
         self.challenge = self.resource_metadata = self.as_metadata = self.registration = None
         self.tokens = None
         self.verifier = secrets.token_urlsafe(48)
@@ -98,9 +102,9 @@ class KeikiStyleClient:
             # RFC 9728 well-known location, path-aware first
             split = urllib.parse.urlsplit(self.mcp_url)
             prm_url = f"{split.scheme}://{split.netloc}/.well-known/oauth-protected-resource{split.path}"
-        self.resource_metadata = _json(prm_url)
+        self.resource_metadata = _json(self.rewrite(prm_url))
         issuer = self.resource_metadata["authorization_servers"][0]
-        split = urllib.parse.urlsplit(issuer)
+        split = urllib.parse.urlsplit(self.rewrite(issuer))
         path = split.path.rstrip("/")
         for well_known in (f"/.well-known/oauth-authorization-server{path}", f"/.well-known/openid-configuration{path}",
                            f"{path}/.well-known/openid-configuration"):
@@ -131,7 +135,7 @@ class KeikiStyleClient:
                 "token_endpoint_auth_method": "none"}
         if self.scope:
             body["scope"] = self.scope
-        self.registration = _json(self.as_metadata["registration_endpoint"], body)
+        self.registration = _json(self.rewrite(self.as_metadata["registration_endpoint"]), body)
         return self.registration
 
     def authorize_url(self) -> str:
@@ -148,7 +152,7 @@ class KeikiStyleClient:
         redirect back to the callback, which is not fetched."""
         opener = urllib.request.build_opener(_NoRedirect)
         try:
-            opener.open(url, timeout=15)
+            opener.open(self.rewrite(url), timeout=15)
         except urllib.error.HTTPError as e:
             if e.code in (301, 302, 303, 307):
                 return e.headers["Location"]
@@ -166,7 +170,7 @@ class KeikiStyleClient:
             raise AssertionError("issuer mismatch")
         if "code" not in query:
             raise AssertionError(f"no code: {query}")
-        self.tokens = _json(self.as_metadata["token_endpoint"], {
+        self.tokens = _json(self.rewrite(self.as_metadata["token_endpoint"]), {
             "grant_type": "authorization_code", "code": query["code"], "redirect_uri": self.redirect_uri,
             "client_id": self.registration["client_id"], "code_verifier": self.verifier,
             "resource": self.resource_metadata["resource"]}, form=True)
