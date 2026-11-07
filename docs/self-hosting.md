@@ -2,7 +2,7 @@
 
 The hosted server is [https://mcp.phone-harness.com/mcp](https://mcp.phone-harness.com/mcp). Adding it as a custom connector is in the [README](../README.md). This page is for running the same server yourself.
 
-The server does not hold a phone. Every tool call goes to Phone Harness Cloud over HTTPS. An iPhone there is a real device (`ios` / `device`). Android is an emulator (`android` / `emulator`): a temporary one by default, or a saved phone that keeps apps and logins.
+The server does not hold a phone. Every tool call goes to Phone Harness Cloud over HTTPS. An iPhone there is a real device (`ios` / `device`). Android is an emulator (`android` / `emulator`): the account's saved phone by default, which keeps apps and logins, or a temporary one with `temporary: true`.
 
 Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you go. A Cloud iPhone is a flat monthly subscription, not billed by the minute: $80/mo, or $100/mo with an eSIM, with 20% off billed annually ($64/mo, or $80/mo with an eSIM). See [phone-harness.com/pricing](https://phone-harness.com/pricing) for current rates.
 
