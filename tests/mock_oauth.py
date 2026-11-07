@@ -1,7 +1,7 @@
 """An OAuth authorization server for tests, standing in for Clerk.
 
-What a self-registering MCP client (Keiki, Claude, ChatGPT) meets at the
-authorization server the hosted server's metadata names: RFC 8414 metadata,
+What a self-registering MCP client meets at the authorization server the
+hosted server's metadata names: RFC 8414 metadata,
 RFC 7591 dynamic client registration, the authorization-code grant with PKCE
 (S256 only) and RFC 8707 resource indicators. The consent screen is skipped:
 an authorization request from a registered client is approved at once, as if

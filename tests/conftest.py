@@ -1,12 +1,6 @@
-import sys
-from pathlib import Path
-
 import pytest
 
-# The Keiki-style client lives with the Keiki example; the tests use it as is.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples" / "keiki"))
-
-from fake_api import FakeCloud  # noqa: E402
+from fake_api import FakeCloud
 
 
 @pytest.fixture

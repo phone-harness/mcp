@@ -1,21 +1,21 @@
-"""A client that connects to the hosted server the way Keiki does.
+"""An MCP client that signs in the way the MCP authorization spec describes.
 
-Keiki (onkeiki.com) gives each person their own MCP connection: an
-`mcp.userConnections` entry names the endpoint, and with no `oauth` block it
-registers itself with the authorization server (RFC 7591) and runs the
-authorization-code grant with PKCE, its callback at
-https://onkeiki.com/api/webapp/user-oauth/callback. Its signup is invite-only,
-so this is the stand-in: every step written out from the MCP authorization
-spec rather than borrowed from the SDK's own client, so a server that only
-works with one client library does not pass by accident.
+Every step is written out rather than borrowed from the SDK's own OAuth
+client, so a server that only works with one client library does not pass by
+accident: POST without a credential, read the 401 challenge, fetch the
+protected-resource metadata it names (RFC 9728), then the authorization
+server's metadata (RFC 8414), register (RFC 7591, a public client with no
+secret), and run the authorization-code grant with PKCE (S256) and a resource
+indicator (RFC 8707). The scope is the challenge's, else the metadata's
+`scopes_supported`.
 
-    client = KeikiStyleClient("https://mcp.phone-harness.com/mcp")
-    challenge = client.discover()          # 401 -> resource metadata -> AS metadata
-    client.register()                      # dynamic client registration
-    location = client.authorize_url()      # the link the person would open
-    client.finish(approve(location))       # the code from the redirect -> tokens
-    async with client.session() as mcp:    # streamable HTTP with the bearer
+    client = SpecClient("https://mcp.example/mcp")
+    client.connect()                      # discover, register, authorize, token
+    async with client.session() as mcp:   # streamable HTTP with the bearer
         ...
+
+`approve` stands in for the person pressing Allow: the authorization server's
+redirect back to the callback is read, never fetched.
 """
 from __future__ import annotations
 
@@ -33,10 +33,10 @@ import httpx2
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-KEIKI_REDIRECT = "https://onkeiki.com/api/webapp/user-oauth/callback"
+CALLBACK = "https://agent.example/oauth/callback"
 INITIALIZE = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
               "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                         "clientInfo": {"name": "keiki-style-client", "version": "0"}}}
+                         "clientInfo": {"name": "spec-client", "version": "0"}}}
 
 
 def parse_challenge(value: str) -> dict:
@@ -47,9 +47,8 @@ def parse_challenge(value: str) -> dict:
     return out
 
 
-def _json(url, data=None, headers=None, form=False):
-    body = None
-    head = {"Accept": "application/json", **(headers or {})}
+def _json(url, data=None, form=False):
+    body, head = None, {"Accept": "application/json"}
     if data is not None:
         if form:
             body = urllib.parse.urlencode(data).encode()
@@ -67,23 +66,17 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-class KeikiStyleClient:
-    def __init__(self, mcp_url: str, redirect_uri: str = KEIKI_REDIRECT, client_name: str = "Keiki",
-                 scope: str | None = None, rewrite=None):
-        """`rewrite(url) -> url` is applied to every address the server's
-        metadata hands back before it is fetched: for running this on the host
-        behind a proxy, where the public address does not reach back in."""
+class SpecClient:
+    def __init__(self, mcp_url: str, redirect_uri: str = CALLBACK, client_name: str = "spec-client",
+                 scope: str | None = None):
         self.mcp_url = mcp_url
         self.redirect_uri = redirect_uri
         self.client_name = client_name
         self.scope_override = scope
-        self.rewrite = rewrite or (lambda url: url)
         self.challenge = self.resource_metadata = self.as_metadata = self.registration = None
         self.tokens = None
         self.verifier = secrets.token_urlsafe(48)
         self.state = secrets.token_urlsafe(16)
-
-    # --- discovery ---------------------------------------------------------------
 
     def discover(self) -> dict:
         """POST initialize with no credential; the 401 says where to go next."""
@@ -99,12 +92,10 @@ class KeikiStyleClient:
             self.challenge = parse_challenge(e.headers["WWW-Authenticate"])
         prm_url = self.challenge.get("resource_metadata")
         if not prm_url:
-            # RFC 9728 well-known location, path-aware first
             split = urllib.parse.urlsplit(self.mcp_url)
             prm_url = f"{split.scheme}://{split.netloc}/.well-known/oauth-protected-resource{split.path}"
-        self.resource_metadata = _json(self.rewrite(prm_url))
-        issuer = self.resource_metadata["authorization_servers"][0]
-        split = urllib.parse.urlsplit(self.rewrite(issuer))
+        self.resource_metadata = _json(prm_url)
+        split = urllib.parse.urlsplit(self.resource_metadata["authorization_servers"][0])
         path = split.path.rstrip("/")
         for well_known in (f"/.well-known/oauth-authorization-server{path}", f"/.well-known/openid-configuration{path}",
                            f"{path}/.well-known/openid-configuration"):
@@ -119,7 +110,6 @@ class KeikiStyleClient:
 
     @property
     def scope(self) -> str | None:
-        """MCP's scope selection: the challenge's, else the resource's scopes_supported."""
         if self.scope_override is not None:
             return self.scope_override
         if self.challenge and self.challenge.get("scope"):
@@ -127,15 +117,13 @@ class KeikiStyleClient:
         supported = (self.resource_metadata or {}).get("scopes_supported")
         return " ".join(supported) if supported else None
 
-    # --- registration and the grant --------------------------------------------------
-
     def register(self) -> dict:
         body = {"client_name": self.client_name, "redirect_uris": [self.redirect_uri],
                 "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"],
                 "token_endpoint_auth_method": "none"}
         if self.scope:
             body["scope"] = self.scope
-        self.registration = _json(self.rewrite(self.as_metadata["registration_endpoint"]), body)
+        self.registration = _json(self.as_metadata["registration_endpoint"], body)
         return self.registration
 
     def authorize_url(self) -> str:
@@ -147,12 +135,11 @@ class KeikiStyleClient:
             params["scope"] = self.scope
         return self.as_metadata["authorization_endpoint"] + "?" + urllib.parse.urlencode(params)
 
-    def approve(self, url: str) -> str:
-        """Stands in for the person pressing Allow: the authorization server's
-        redirect back to the callback, which is not fetched."""
+    @staticmethod
+    def approve(url: str) -> str:
         opener = urllib.request.build_opener(_NoRedirect)
         try:
-            opener.open(self.rewrite(url), timeout=15)
+            opener.open(url, timeout=15)
         except urllib.error.HTTPError as e:
             if e.code in (301, 302, 303, 307):
                 return e.headers["Location"]
@@ -160,7 +147,6 @@ class KeikiStyleClient:
         raise AssertionError("the authorization server did not redirect")
 
     def finish(self, location: str) -> dict:
-        """The callback's query -> tokens."""
         query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(location).query))
         if not location.startswith(self.redirect_uri):
             raise AssertionError(f"redirected somewhere else: {location}")
@@ -170,14 +156,13 @@ class KeikiStyleClient:
             raise AssertionError("issuer mismatch")
         if "code" not in query:
             raise AssertionError(f"no code: {query}")
-        self.tokens = _json(self.rewrite(self.as_metadata["token_endpoint"]), {
+        self.tokens = _json(self.as_metadata["token_endpoint"], {
             "grant_type": "authorization_code", "code": query["code"], "redirect_uri": self.redirect_uri,
             "client_id": self.registration["client_id"], "code_verifier": self.verifier,
             "resource": self.resource_metadata["resource"]}, form=True)
         return self.tokens
 
     def connect(self) -> str:
-        """All of the above -> the access token."""
         self.discover()
         self.register()
         self.finish(self.approve(self.authorize_url()))
@@ -191,16 +176,3 @@ class KeikiStyleClient:
                 async with ClientSession(read, write) as s:
                     await s.initialize()
                     yield s
-
-
-# Keiki's limits on an iMessage app card (onkeiki.com/docs/imessage-apps).
-def check_presentation(p: dict, https: bool = True):
-    assert p["type"] == "app"
-    assert isinstance(p["id"], str) and 1 <= len(p["id"]) <= 128
-    assert isinstance(p["url"], str) and len(p["url"]) <= 2048
-    parsed = urllib.parse.urlsplit(p["url"])
-    assert parsed.username is None and parsed.password is None          # no embedded credentials
-    if https:
-        assert parsed.scheme == "https"
-    assert 1 <= len(p["caption"]) <= 60
-    assert 1 <= len(p["subcaption"]) <= 80

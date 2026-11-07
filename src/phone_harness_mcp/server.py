@@ -32,7 +32,7 @@ Start with phone_list_available_devices. If a phone is running, pass its id as `
 
 To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked.
 
-Working for a person over a chat or a message: phone_get_screenshot_url gives a short-lived HTTPS link to one screenshot, to download and send as an image (no image bytes in the tool result). When the person has to do something themselves (a password, a code, a CAPTCHA, an approval), phone_start_handoff gives them a one-time link to take over the phone for a few minutes; send it, don't drive the phone while they have it, and continue when they say they are done or phone_get_handoff says it ended. Links never carry an account key."""
+To show someone the screen, phone_get_screenshot_url gives a short-lived HTTPS link to one screenshot instead of image bytes. When a person has to do something themselves (a password, a code, a CAPTCHA, an approval), phone_start_handoff gives them a one-time link to take over the phone for a few minutes; send it, don't drive the phone while they have it, and continue when they say they are done or phone_get_handoff says it ended. Links never carry an account key."""
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 TOUCH = ToolAnnotations(read_only_hint=False, destructive_hint=False)
@@ -60,21 +60,11 @@ class ScreenshotLink(TypedDict):
     screen: ScreenSize | None
 
 
-class Presentation(TypedDict):
-    """A Keiki iMessage app card for the handoff link (onkeiki.com/docs/imessage-apps)."""
-    type: str
-    id: str
-    url: str
-    caption: str
-    subcaption: str
-
-
 class HandoffLink(TypedDict):
     handoff_id: str
     url: str
     expires_at: float
     state: str
-    presentation: Presentation
 
 
 class HandoffStatus(TypedDict):
@@ -408,7 +398,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
     @server.tool(name="phone_get_screenshot_url", title="Screenshot link", annotations=SHARES)
     async def get_screenshot_url(ctx: Context, device: str,
                                  minutes: int = 10) -> Annotated[CallToolResult, ScreenshotLink]:
-        """Take a screenshot and return an HTTPS link to that one image instead of the image itself: for showing a person the screen over a chat or a message without handling image bytes. The link works for `minutes` (default 10, at most 15), shows only this picture (not the live screen), keeps working if the phone is stopped, and carries no account key. Download it and send the image when you can; send the link itself only when you cannot attach files."""
+        """Cloud Android phones: take a screenshot and return an HTTPS link to that one image instead of the image itself, for showing someone the screen without handling image bytes. The link works for `minutes` (default 10, at most 15), shows only this picture (not the live screen), keeps working if the phone is stopped, and carries no account key. Download it and send the image when you can; send the link itself only when you cannot attach files."""
         minutes = _bounded_minutes(minutes, SCREENSHOT_LINK_MINUTES, "A screenshot link")
         shot = await _thread(phones(ctx).screenshot_link, device, minutes * 60)
         screen = shot.get("screen") if isinstance(shot.get("screen"), dict) else None
@@ -424,16 +414,13 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     @server.tool(name="phone_start_handoff", title="Hand the phone to a person", annotations=SHARES)
     async def start_handoff(ctx: Context, device: str, minutes: int = 10) -> Annotated[CallToolResult, HandoffLink]:
-        """Let a person take over the phone for a few minutes, for what they have to do themselves: type a password, enter a code, solve a CAPTCHA, approve a prompt. Returns a link to a page that shows the screen and takes their taps and typing; send it to the person (on iMessage, `presentation` is a ready app card). The link works once (the first browser to open it holds control), for `minutes` (default 10, at most 30), on this phone only, and carries no account key; a new link turns off the last one. While they have control, don't drive the phone: continue when they say they are done or phone_get_handoff says it ended. phone_end_handoff takes control back early."""
+        """Cloud Android phones: let a person take over the phone for a few minutes, for what they have to do themselves: type a password, enter a code, solve a CAPTCHA, approve a prompt. Returns a link to a page that shows the screen live and takes their taps and typing; send it to that person only. The link works once (the first browser to open it holds control), for `minutes` (default 10, at most 30), on this phone only, and carries no account key; a new link turns off the last one. While they have control, don't drive the phone: continue when they say they are done or phone_get_handoff says it ended. phone_end_handoff takes control back early."""
         minutes = _bounded_minutes(minutes, HANDOFF_MINUTES, "A handoff link")
         h = await _thread(phones(ctx).handoff, device, max(60, minutes * 60))
-        presentation = {"type": "app", "id": f"phone-handoff-{h['id']}", "url": h["url"],
-                        "caption": "Take over the phone", "subcaption": f"Works once, for {minutes} min"}
         text = (f"Handoff link for the person (works once, for {minutes} min): {h['url']}\n"
                 "Send it to them. Don't drive the phone while they have it; when they say they are done, "
                 "or phone_get_handoff says it ended, take a screenshot and continue.")
-        data = {"handoff_id": h["id"], "url": h["url"], "expires_at": h["expires_at"], "state": h.get("state") or "waiting",
-                "presentation": presentation}
+        data = {"handoff_id": h["id"], "url": h["url"], "expires_at": h["expires_at"], "state": h.get("state") or "waiting"}
         return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=data)
 
     @server.tool(name="phone_get_handoff", title="Handoff status", annotations=READ_ONLY)
