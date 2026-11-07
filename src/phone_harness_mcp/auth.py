@@ -76,6 +76,41 @@ class RequireBearer:
         await response(scope, receive, send)
 
 
+class AdvertiseScope:
+    """Name the scope in every bearer challenge under `path`.
+
+    The SDK's 401 says where the protected-resource metadata is, not which
+    scope to ask for. MCP clients pick the scope from the challenge first and
+    from the metadata's `scopes_supported` second; a client that registers
+    itself and asks for nothing (no scope in its request) is issued a token
+    the API refuses. Naming it here closes that gap for clients that read
+    only the challenge (RFC 6750 section 3, `scope`)."""
+
+    def __init__(self, app, scope: str, path: str = "/mcp"):
+        self.app = app
+        self.scope = scope
+        self.path = path.rstrip("/") or "/"
+
+    async def __call__(self, scope, receive, send):
+        if (scope["type"] != "http" or not self.scope
+                or not (scope["path"] == self.path or scope["path"].startswith(self.path + "/"))):
+            await self.app(scope, receive, send)
+            return
+        wanted = self.scope
+
+        async def named(message):
+            if message["type"] == "http.response.start" and message["status"] in (401, 403):
+                headers = []
+                for key, value in message.get("headers", []):
+                    if key.lower() == b"www-authenticate" and b"scope=" not in value:
+                        value = value + f', scope="{wanted}"'.encode()
+                    headers.append((key, value))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, named)
+
+
 class CloudTokenVerifier:
     """Is this bearer good for Phone Harness Cloud? Ask the API, remember briefly."""
 

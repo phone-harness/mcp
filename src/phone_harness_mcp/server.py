@@ -12,26 +12,78 @@ import functools
 import json
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.utilities.types import Image
-from mcp.types import TextContent, ToolAnnotations
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from typing_extensions import TypedDict
 
 from . import __version__, screenshots
 from .auth import bearer_of
 from .cloud import Cloud, StaticToken
-from .phone import DEFAULT_MINUTES, READY_WAIT, PhoneError, Phones, Unsupported, describe, minutes_left
+from .phone import (DEFAULT_MINUTES, READY_WAIT, PhoneError, Phones, ProfileRunning, Unsupported, describe,
+                    minutes_left)
 
 INSTRUCTIONS = """Drive a Phone Harness Cloud phone: a real iPhone or an Android emulator, reached over HTTPS.
 
-Start with phone_list_available_devices. If a phone is running, pass its id as `device` to every other tool. If none is, phone_start_device starts one. Cloud Android is pay as you go at 5 cents per minute; a cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM, or 20% off billed annually at $64/mo, $80/mo with eSIM) and is not billed by the minute. Call phone_stop_device when the task is done.
+Start with phone_list_available_devices. If a phone is running, pass its id as `device` to every other tool. If none is, phone_start_device starts one: with nothing named, the account's saved Android phone (apps and logins kept between sessions), or the session already running it. Cloud Android is pay as you go at 5 cents per minute; a cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM, or 20% off billed annually at $64/mo, $80/mo with eSIM) and is not billed by the minute. Call phone_stop_device when the task is done.
 
-To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked."""
+To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked.
+
+Working for a person over a chat or a message: phone_get_screenshot_url gives a short-lived HTTPS link to one screenshot, to download and send as an image (no image bytes in the tool result). When the person has to do something themselves (a password, a code, a CAPTCHA, an approval), phone_start_handoff gives them a one-time link to take over the phone for a few minutes; send it, don't drive the phone while they have it, and continue when they say they are done or phone_get_handoff says it ended. Links never carry an account key."""
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 TOUCH = ToolAnnotations(read_only_hint=False, destructive_hint=False)
+# A link that someone else can open: it changes nothing on the phone, but it
+# reaches outside this conversation, so it is not a read.
+SHARES = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True)
+
+SCREENSHOT_LINK_MINUTES = (1, 15)
+HANDOFF_MINUTES = (1, 30)
+# Between asks while the saved phone's last session is still storing it.
+SAVED_RETRY_SECONDS = 3
+
+
+class ScreenSize(TypedDict):
+    w: int
+    h: int
+
+
+class ScreenshotLink(TypedDict):
+    url: str
+    expires_at: float
+    content_type: str
+    width: int | None
+    height: int | None
+    screen: ScreenSize | None
+
+
+class Presentation(TypedDict):
+    """A Keiki iMessage app card for the handoff link (onkeiki.com/docs/imessage-apps)."""
+    type: str
+    id: str
+    url: str
+    caption: str
+    subcaption: str
+
+
+class HandoffLink(TypedDict):
+    handoff_id: str
+    url: str
+    expires_at: float
+    state: str
+    presentation: Presentation
+
+
+class HandoffStatus(TypedDict):
+    handoff_id: str | None
+    state: str
+    reason: str | None
+    expires_at: float | None
+    inputs: int
+    last_input_at: float | None
 
 BUTTONS = {
     "HOME": ("nav.home", {}),
@@ -117,6 +169,117 @@ def _balance_line(me: dict) -> str | None:
     return line
 
 
+def _saved_phone(me: dict) -> dict | None:
+    """The account's saved Android phone from `GET /me` ({id, state, session}),
+    or None where the service keeps none."""
+    profile = me.get("profile")
+    if isinstance(profile, dict) and isinstance(profile.get("id"), str) and profile["id"]:
+        return profile
+    return None
+
+
+def _bounded_minutes(minutes, bounds, what) -> int:
+    lo, hi = bounds
+    try:
+        value = int(minutes)
+    except (TypeError, ValueError):
+        raise PhoneError(f"minutes must be a whole number from {lo} to {hi}") from None
+    if not lo <= value <= hi:
+        raise PhoneError(f"{what} works for {lo} to {hi} minutes.")
+    return value
+
+
+HANDOFF_STATES = {
+    "waiting": "The person has not opened the link yet.",
+    "active": "The person has control of the phone. Don't drive it until they are done.",
+    "ended": "The person handed the phone back. Take a screenshot to see where things are, then continue.",
+    "expired": "The link expired before the person was done. Make a new one if they still need the phone.",
+}
+HANDOFF_REASONS = {
+    "replaced": "A newer handoff link replaced it.",
+    "revoked": "It was turned off.",
+    "session_ended": "The phone session ended.",
+}
+
+
+def _handoff_text(h: dict | None) -> str:
+    if not h:
+        return "No handoff link has been made for this phone."
+    state = h.get("state") or "unknown"
+    text = HANDOFF_STATES.get(state) or ("The handoff link no longer works. "
+                                         + HANDOFF_REASONS.get(h.get("reason"), ""))
+    if state in ("active", "ended") and h.get("inputs"):
+        text += f" ({h['inputs']} actions on the phone so far.)"
+    if state in ("waiting", "active") and h.get("expires_at"):
+        left = max(0, int((float(h["expires_at"]) - time.time()) // 60))
+        text += f" The link stops working in {left} min."
+    return text.strip()
+
+
+async def _progress(ctx, elapsed, phase):
+    try:
+        await ctx.report_progress(elapsed, READY_WAIT, phase)
+    except Exception:   # a client without a progress token
+        pass
+
+
+async def _until_ready(ph, ctx, session, started, *, give_back):
+    """Poll a starting session until it is ready -> its document. After
+    READY_WAIT a phone this call started is given back (`give_back`); one it
+    found already starting is left to whoever started it."""
+    sid = session["id"]
+    shown = None
+    while session.get("state") != "ready":
+        if session.get("state") in ("error", "closing"):
+            raise PhoneError(f"The phone did not start: {session.get('error') or session['state']}")
+        elapsed = time.monotonic() - started
+        if elapsed >= READY_WAIT:
+            if give_back:
+                try:
+                    await _thread(ph.stop, sid)
+                except PhoneError:
+                    pass
+                raise PhoneError(f"Gave up after {READY_WAIT}s waiting for the phone; asked the service to end session {sid}.")
+            raise PhoneError(f"Device {sid} is still starting after {READY_WAIT}s; check phone_list_available_devices.")
+        progress = session.get("progress") or {}
+        phase = progress.get("phase") or "provisioning"
+        if progress.get("queue_position"):
+            phase += f", position {progress['queue_position']} in the queue"
+        if phase != shown:
+            shown = phase
+            await _progress(ctx, elapsed, phase)
+        await anyio.sleep(2)
+        session = await _thread(ph.session, sid)
+    return session
+
+
+async def _live_holder(ph, sid):
+    """The session holding the saved phone, if it is starting or ready (one to
+    reattach to); None when it has ended or is ending (the phone is being saved)."""
+    try:
+        session = await _thread(ph.session, sid)
+    except PhoneError:
+        return None
+    if session.get("state") in ("provisioning", "ready") and not session.get("close_requested"):
+        return session
+    return None
+
+
+async def _reattached(ph, ctx, session, started):
+    session = await _until_ready(ph, ctx, session, started, give_back=False)
+    sid = session["id"]
+    return (f"The saved phone is already running as device {sid}; using that session instead of starting "
+            f"another.{_ready_details(session)} Pass device=\"{sid}\" to the other tools.")
+
+
+def _ready_details(session: dict) -> str:
+    screen = session.get("screen")
+    size = f" Screen {screen['w']}x{screen['h']}." if isinstance(screen, dict) and screen.get("w") else ""
+    left = minutes_left(session)
+    ends = f" It ends in {left} min unless phone_stop_device is called first." if left is not None else ""
+    return size + ends
+
+
 def _elements_text(boxes: list[dict], bounds: dict | None) -> str:
     boxes = [b for b in boxes if isinstance(b, dict) and str(b.get("text") or "").strip()]
     if not boxes:
@@ -160,13 +323,19 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
                            platform: Literal["android", "ios"] | None = None,
                            kind: Literal["emulator", "device"] | None = None,
                            device_id: str | None = None,
+                           temporary: bool = False,
                            minutes: int = DEFAULT_MINUTES) -> str:
-        """Start a phone and wait until it is ready; returns its device id. With nothing named, the account's default phone (a temporary Android emulator) starts. `platform` and `kind` go together (android/emulator, or ios/device for the account's own iPhone). `device_id` is an id from phone_list_available_devices: a particular iPhone, or the account's saved Android phone (apps and logins kept between sessions). `minutes` (default 30) is how long the session runs. Cloud Android bills 5 cents per minute; a cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM, or 20% off billed annually at $64/mo, $80/mo with eSIM) and is not billed by the minute. Stop it with phone_stop_device when done."""
+        """Start a phone and wait until it is ready; returns its device id. With nothing named, the account's saved Android phone starts (its apps and logins are kept between sessions), and if it is already running, that session is returned instead of starting another. `temporary: true` starts a throwaway Android emulator that keeps nothing. `platform` and `kind` go together (android/emulator, or ios/device for the account's own iPhone). `device_id` is an id from phone_list_available_devices: a particular iPhone, or the saved Android phone. `minutes` (default 30) is how long the session runs. Cloud Android bills 5 cents per minute; a cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM, or 20% off billed annually at $64/mo, $80/mo with eSIM) and is not billed by the minute. Stop it with phone_stop_device when done."""
         if (platform is None) != (kind is None):
             raise PhoneError("platform and kind go together: android with emulator, or ios with device.")
+        if temporary and (device_id or platform == "ios"):
+            raise PhoneError("temporary is a throwaway Android emulator; it takes no device_id and no iPhone.")
         ph = phones(ctx)
+        started = time.monotonic()
         body: dict = {"timeout_seconds": max(1, int(minutes)) * 60}
-        if device_id:
+        if temporary:
+            body.update(platform="android", kind="emulator")
+        elif device_id:
             if platform is None:
                 # The id says which catalog entry is meant; the catalog says what it is.
                 catalog = (await _thread(ph.me)).get("available") or []
@@ -177,41 +346,38 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
                 platform, kind = entry.get("platform"), entry.get("kind")
             # The API names an iPhone by device_id and the saved Android phone by profile_id.
             body["device_id" if platform == "ios" else "profile_id"] = device_id
-        if platform:
-            body["platform"] = platform
-            body["kind"] = kind
-        session = await _thread(ph.start, body)
+            body.update(platform=platform, kind=kind)
+        elif platform is None:
+            # Nothing named: the saved Android phone, if the service keeps one.
+            # Otherwise the endpoint's own rule (a temporary emulator).
+            saved = _saved_phone(await _thread(ph.me))
+            if saved is not None:
+                body.update(platform="android", kind="emulator", profile_id=saved["id"])
+                if saved.get("session"):
+                    held = await _live_holder(ph, saved["session"])
+                    if held is not None:
+                        return await _reattached(ph, ctx, held, started)
+        else:
+            body.update(platform=platform, kind=kind)
+        while True:
+            try:
+                session = await _thread(ph.start, body)
+                break
+            except ProfileRunning as e:
+                # The saved phone is held: use the session that has it, or, when
+                # that session is ending (the phone is being saved), wait for it.
+                held = await _live_holder(ph, e.session) if e.session else None
+                if held is not None:
+                    return await _reattached(ph, ctx, held, started)
+                if time.monotonic() - started >= READY_WAIT:
+                    raise PhoneError("The saved phone is still being saved from its last session. "
+                                     "Try again in a minute.") from None
+                await _progress(ctx, time.monotonic() - started, "saving the phone from its last session")
+                await anyio.sleep(SAVED_RETRY_SECONDS)
+        session = await _until_ready(ph, ctx, session, started, give_back=True)
         sid = session["id"]
-        started = time.monotonic()
-        shown = None
-        while session.get("state") != "ready":
-            if session.get("state") in ("error", "closing"):
-                raise PhoneError(f"The phone did not start: {session.get('error') or session['state']}")
-            elapsed = time.monotonic() - started
-            if elapsed >= READY_WAIT:
-                try:
-                    await _thread(ph.stop, sid)
-                except PhoneError:
-                    pass
-                raise PhoneError(f"Gave up after {READY_WAIT}s waiting for the phone; asked the service to end session {sid}.")
-            progress = session.get("progress") or {}
-            phase = progress.get("phase") or "provisioning"
-            if progress.get("queue_position"):
-                phase += f", position {progress['queue_position']} in the queue"
-            if phase != shown:
-                shown = phase
-                try:
-                    await ctx.report_progress(elapsed, READY_WAIT, phase)
-                except Exception:   # a client without a progress token
-                    pass
-            await anyio.sleep(2)
-            session = await _thread(ph.session, sid)
-        screen = session.get("screen")
-        size = f" Screen {screen['w']}x{screen['h']}." if isinstance(screen, dict) and screen.get("w") else ""
-        left = minutes_left(session)
-        ends = f" It ends in {left} min unless phone_stop_device is called first." if left is not None else ""
-        return (f"Started {session.get('device') or 'the phone'} as device {sid}.{size}{ends} "
-                f"Pass device=\"{sid}\" to the other tools.")
+        what = "the saved phone" if body.get("profile_id") else session.get("device") or "the phone"
+        return f"Started {what} as device {sid}.{_ready_details(session)} Pass device=\"{sid}\" to the other tools."
 
     @server.tool(name="phone_stop_device", title="Stop a phone",
                  annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True))
@@ -238,6 +404,56 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
         screen = (_point(bounds["w"]), _point(bounds["h"])) if bounds and bounds.get("w") else screenshots.image_size(png)
         note = screenshots.describe_mapping(size, screen) or f"Screenshot is {size[0]}x{size[1]}."
         return [TextContent(type="text", text=note), Image(data=data, format=mime.split("/")[1]).to_image_content()]
+
+    @server.tool(name="phone_get_screenshot_url", title="Screenshot link", annotations=SHARES)
+    async def get_screenshot_url(ctx: Context, device: str,
+                                 minutes: int = 10) -> Annotated[CallToolResult, ScreenshotLink]:
+        """Take a screenshot and return an HTTPS link to that one image instead of the image itself: for showing a person the screen over a chat or a message without handling image bytes. The link works for `minutes` (default 10, at most 15), shows only this picture (not the live screen), keeps working if the phone is stopped, and carries no account key. Download it and send the image when you can; send the link itself only when you cannot attach files."""
+        minutes = _bounded_minutes(minutes, SCREENSHOT_LINK_MINUTES, "A screenshot link")
+        shot = await _thread(phones(ctx).screenshot_link, device, minutes * 60)
+        screen = shot.get("screen") if isinstance(shot.get("screen"), dict) else None
+        lines = [f"Screenshot link (this one image, for {minutes} min): {shot['url']}"]
+        if screen and shot.get("width") and shot.get("height"):
+            mapping = screenshots.describe_mapping((shot["width"], shot["height"]), (screen["w"], screen["h"]))
+            if mapping:
+                lines.append(mapping)
+        data = {"url": shot["url"], "expires_at": shot["expires_at"], "content_type": shot.get("content_type") or "image/png",
+                "width": shot.get("width"), "height": shot.get("height"),
+                "screen": {"w": screen["w"], "h": screen["h"]} if screen else None}
+        return CallToolResult(content=[TextContent(type="text", text="\n".join(lines))], structured_content=data)
+
+    @server.tool(name="phone_start_handoff", title="Hand the phone to a person", annotations=SHARES)
+    async def start_handoff(ctx: Context, device: str, minutes: int = 10) -> Annotated[CallToolResult, HandoffLink]:
+        """Let a person take over the phone for a few minutes, for what they have to do themselves: type a password, enter a code, solve a CAPTCHA, approve a prompt. Returns a link to a page that shows the screen and takes their taps and typing; send it to the person (on iMessage, `presentation` is a ready app card). The link works once (the first browser to open it holds control), for `minutes` (default 10, at most 30), on this phone only, and carries no account key; a new link turns off the last one. While they have control, don't drive the phone: continue when they say they are done or phone_get_handoff says it ended. phone_end_handoff takes control back early."""
+        minutes = _bounded_minutes(minutes, HANDOFF_MINUTES, "A handoff link")
+        h = await _thread(phones(ctx).handoff, device, max(60, minutes * 60))
+        presentation = {"type": "app", "id": f"phone-handoff-{h['id']}", "url": h["url"],
+                        "caption": "Take over the phone", "subcaption": f"Works once, for {minutes} min"}
+        text = (f"Handoff link for the person (works once, for {minutes} min): {h['url']}\n"
+                "Send it to them. Don't drive the phone while they have it; when they say they are done, "
+                "or phone_get_handoff says it ended, take a screenshot and continue.")
+        data = {"handoff_id": h["id"], "url": h["url"], "expires_at": h["expires_at"], "state": h.get("state") or "waiting",
+                "presentation": presentation}
+        return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=data)
+
+    @server.tool(name="phone_get_handoff", title="Handoff status", annotations=READ_ONLY)
+    async def get_handoff(ctx: Context, device: str) -> Annotated[CallToolResult, HandoffStatus]:
+        """Whether the person you handed the phone to has opened the link, has control, or handed it back: `state` is waiting, active, ended, revoked or expired."""
+        rows = await _thread(phones(ctx).handoffs, device)
+        h = rows[0] if rows else None
+        data = {"handoff_id": h.get("id") if h else None, "state": (h.get("state") if h else None) or "none",
+                "reason": h.get("reason") if h else None, "expires_at": h.get("expires_at") if h else None,
+                "inputs": int(h.get("inputs") or 0) if h else 0, "last_input_at": h.get("last_input_at") if h else None}
+        return CallToolResult(content=[TextContent(type="text", text=_handoff_text(h))], structured_content=data)
+
+    @server.tool(name="phone_end_handoff", title="Take the phone back",
+                 annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True))
+    async def end_handoff(ctx: Context, device: str) -> str:
+        """Turn off this phone's handoff link and take control back from the person. Safe to call when there is none."""
+        revoked = await _thread(phones(ctx).end_handoffs, device)
+        if revoked:
+            return "Turned off the handoff link; the person no longer has control of the phone."
+        return "No handoff link was live for this phone."
 
     if allow_files:
         @server.tool(name="phone_save_screenshot", title="Save a screenshot", annotations=TOUCH)
