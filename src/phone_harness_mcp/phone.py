@@ -102,6 +102,14 @@ class Phones:
         body = {} if ttl is None else {"ttl_seconds": int(ttl)}
         return self._call("POST", f"/sessions/{sid}/screenshots", body, sid=sid, feature="screenshot links")
 
+    def live_view(self, sid: str, mode: str = "view", ttl: int | None = None) -> dict:
+        """A link to the screen, live, that whoever holds it can open or embed:
+        `view` watches, `control` also drives. Until the session ends, or `ttl` seconds."""
+        body: dict = {"mode": mode}
+        if ttl is not None:
+            body["ttl_seconds"] = int(ttl)
+        return self._call("POST", f"/sessions/{sid}/live-views", body, sid=sid, feature="live view links")
+
     def handoff(self, sid: str, ttl: int | None = None) -> dict:
         """A link that hands control of the screen to a person for a few minutes."""
         body = {} if ttl is None else {"ttl_seconds": int(ttl)}

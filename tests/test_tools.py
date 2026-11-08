@@ -14,7 +14,8 @@ EXPECTED_TOOLS = {
     "phone_list_elements_on_screen", "phone_click_on_screen_at_coordinates",
     "phone_long_press_on_screen_at_coordinates", "phone_swipe_on_screen", "phone_type_keys",
     "phone_press_button", "phone_list_apps", "phone_launch_app", "phone_get_foreground_app",
-    "phone_get_screenshot_url", "phone_start_handoff", "phone_get_handoff", "phone_end_handoff",
+    "phone_get_screenshot_url", "phone_get_live_view_url", "phone_start_handoff", "phone_get_handoff",
+    "phone_end_handoff",
 }
 
 

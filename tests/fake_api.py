@@ -61,6 +61,7 @@ class FakeCloud:
         self.links = True             # False: an older service with no screenshot or handoff routes
         self.shots = {}               # id -> (token, png bytes)
         self.handoffs = {}            # id -> record, oldest first
+        self.live_views = {}          # id -> record and the body it was asked with
         self.oauth_scopes = {}        # bearer -> its OAuth scope string, for tokens a test's authorization server issued
 
     # --- lifecycle --------------------------------------------------------------
@@ -188,12 +189,14 @@ class FakeCloud:
                 else:
                     s["state"] = "closed"
                 return 200, {"released": True}, None
-            if len(parts) == 3 and parts[2] in ("screenshots", "handoffs") and not self.links:
+            if len(parts) == 3 and parts[2] in ("screenshots", "handoffs", "live-views") and not self.links:
                 raise _Reply(404, {"error": f"no route {method} {path}"})
             if len(parts) == 3 and parts[2] == "screenshots" and method == "POST":
                 return self.screenshot_link(s, self._body(h))
             if len(parts) == 3 and parts[2] == "handoffs":
                 return self.handoff_route(s, method, self._body(h) if method == "POST" else {})
+            if len(parts) == 3 and parts[2] == "live-views" and method == "POST":
+                return self.live_view(s, self._body(h))
             if len(parts) == 3 and parts[2] == "ops" and method == "GET":
                 if s["state"] != "ready":
                     raise _Reply(409, {"error": "the phone is not ready"})
@@ -299,6 +302,24 @@ class FakeCloud:
         h.send_header("Content-Length", str(len(found[1])))
         h.end_headers()
         h.wfile.write(found[1])
+
+    def live_view(self, s, body):
+        """POST /sessions/{id}/live-views, as phone-cloud answers it."""
+        if s["state"] != "ready":
+            raise _Reply(409, {"error": "session is not ready"})
+        if set(body) - {"mode", "ttl_seconds"}:
+            raise _Reply(400, {"error": "a live view takes only mode and ttl_seconds"})
+        mode, ttl = body.get("mode", "view"), body.get("ttl_seconds")
+        if mode not in ("view", "control"):
+            raise _Reply(400, {"error": "mode must be view or control"})
+        if ttl is not None and (type(ttl) is not int or not 60 <= ttl <= 21600):
+            raise _Reply(400, {"error": "ttl_seconds must be a whole number from 60 to 21600"})
+        lid = f"{len(self.live_views) + 1:016x}"
+        record = {"id": lid, "mode": mode, "state": "live", "reason": None, "created_at": time.time(),
+                  "expires_at": time.time() + (21600 if ttl is None else ttl), "ended_at": None, "opened_at": None,
+                  "inputs": 0, "last_input_at": None}
+        self.live_views[lid] = {**record, "sid": s["id"], "body": dict(body)}
+        return 201, {**record, "url": f"{self.url}/live/{lid}#token=phv_{lid}"}, None
 
     def handoff_route(self, s, method, body):
         mine = [r for r in self.handoffs.values() if r["sid"] == s["id"]]

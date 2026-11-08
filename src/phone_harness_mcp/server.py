@@ -32,7 +32,7 @@ Start with phone_list_available_devices. If a phone is running, pass its id as `
 
 To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked.
 
-To show someone the screen, phone_get_screenshot_url gives a short-lived HTTPS link to one screenshot instead of image bytes. When a person has to do something themselves (a password, a code, a CAPTCHA, an approval), phone_start_handoff gives them a one-time link to take over the phone for a few minutes; send it, don't drive the phone while they have it, and continue when they say they are done or phone_get_handoff says it ended. Links never carry an account key."""
+To show someone the screen, phone_get_screenshot_url gives a short-lived HTTPS link to one screenshot instead of image bytes; phone_get_live_view_url gives a link to the screen live, to open or embed in a page (watch only by default). When a person has to do something themselves (a password, a code, a CAPTCHA, an approval), phone_start_handoff gives them a one-time link to take over the phone for a few minutes; send it, don't drive the phone while they have it, and continue when they say they are done or phone_get_handoff says it ended. Links never carry an account key."""
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 TOUCH = ToolAnnotations(read_only_hint=False, destructive_hint=False)
@@ -41,6 +41,7 @@ TOUCH = ToolAnnotations(read_only_hint=False, destructive_hint=False)
 SHARES = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True)
 
 SCREENSHOT_LINK_MINUTES = (1, 15)
+LIVE_VIEW_MINUTES = (1, 360)
 HANDOFF_MINUTES = (1, 30)
 # Between asks while the saved phone's last session is still storing it.
 SAVED_RETRY_SECONDS = 3
@@ -58,6 +59,13 @@ class ScreenshotLink(TypedDict):
     width: int | None
     height: int | None
     screen: ScreenSize | None
+
+
+class LiveViewLink(TypedDict):
+    live_view_id: str
+    url: str
+    mode: str
+    expires_at: float
 
 
 class HandoffLink(TypedDict):
@@ -411,6 +419,24 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
                 "width": shot.get("width"), "height": shot.get("height"),
                 "screen": {"w": screen["w"], "h": screen["h"]} if screen else None}
         return CallToolResult(content=[TextContent(type="text", text="\n".join(lines))], structured_content=data)
+
+    @server.tool(name="phone_get_live_view_url", title="Live view link", annotations=SHARES)
+    async def get_live_view_url(ctx: Context, device: str, mode: Literal["view", "control"] = "view",
+                                minutes: int | None = None) -> Annotated[CallToolResult, LiveViewLink]:
+        """Cloud Android phones: a link to the phone's screen, live, that anyone who has it can open in a browser or embed in a web page (an iframe), with no sign-in. `mode` "view" (the default) only shows the screen; "control" also takes taps, swipes and typing, so give a control link only to the person meant to use the phone, and don't drive the phone while they do. The link works until the phone stops, or for `minutes` (at most 360, six hours), on this phone only, carries no account key, and can be opened again and by more than one person. For handing the phone to someone to finish a step and then knowing they are done, use phone_start_handoff instead."""
+        if minutes is not None:
+            minutes = _bounded_minutes(minutes, LIVE_VIEW_MINUTES, "A live view link")
+        if mode not in ("view", "control"):
+            raise PhoneError('mode is "view" or "control".')
+        link = await _thread(phones(ctx).live_view, device, mode, minutes * 60 if minutes else None)
+        lasts = f"for {minutes} min" if minutes else "until the phone stops (6 hours at most)"
+        what = "watch only" if link.get("mode", mode) == "view" else "control: taps, swipes and typing"
+        text = (f"Live view link ({what}, {lasts}): {link['url']}\n"
+                "Open it in a browser or put it in an <iframe>; it needs no sign-in, so share it only with "
+                "people who should see the phone.")
+        data = {"live_view_id": link["id"], "url": link["url"], "mode": link.get("mode", mode),
+                "expires_at": link["expires_at"]}
+        return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=data)
 
     @server.tool(name="phone_start_handoff", title="Hand the phone to a person", annotations=SHARES)
     async def start_handoff(ctx: Context, device: str, minutes: int = 10) -> Annotated[CallToolResult, HandoffLink]:

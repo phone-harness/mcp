@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-Screenshot links, handoffs and the saved Android phone (PHO-224).
+Screenshot links, live view links, handoffs and the saved Android phone (PHO-224).
 
 - **Compatibility:** `phone_start_device` with nothing named starts the
   account's saved Android phone, or returns the session already holding it
@@ -12,6 +12,9 @@ Screenshot links, handoffs and the saved Android phone (PHO-224).
 - `phone_get_screenshot_url` (Cloud Android): an HTTPS link to one
   screenshot, 10 minutes by default and 15 at most; no image bytes in the
   result and no account key in the link.
+- `phone_get_live_view_url` (Cloud Android): a link to the screen, live, to
+  open or embed in a page with no sign-in; `view` (default) or `control`,
+  until the phone stops (6 hours at most) or for `minutes`.
 - `phone_start_handoff`, `phone_get_handoff`, `phone_end_handoff` (Cloud
   Android): a one-time, revocable link that hands the phone to a person for a
   few minutes, on a page that shows the screen live; its state; taking it back.

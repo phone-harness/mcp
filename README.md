@@ -216,16 +216,31 @@ Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you
 | `phone_launch_app` | Open an app by the name on its icon, or on Android by package id. |
 | `phone_get_foreground_app` | Which app is in front, when the phone reports it. |
 | `phone_get_screenshot_url` | Cloud Android: a short-lived HTTPS link to one screenshot, instead of the image, for showing someone the screen. Works for `minutes` (default 10, at most 15), shows that picture only, and carries no account key. |
+| `phone_get_live_view_url` | Cloud Android: a link to the phone's screen, live, that anyone who has it can open in a browser or embed in a page (an `<iframe>`), with no sign-in. `mode` `view` (default) only watches; `control` also takes taps, swipes and typing. Works until the phone stops (6 hours at most) or for `minutes` (1–360), and carries no account key. |
 | `phone_start_handoff` | Cloud Android: a one-time link that hands the phone to a person for `minutes` (default 10, at most 30), for passwords, codes and CAPTCHAs. The page shows the screen live and takes their taps, swipes and typing; it carries no account key. |
 | `phone_get_handoff` | Whether the person opened the link, has control, or handed the phone back. |
 | `phone_end_handoff` | Turn the handoff link off and take control back at once. |
 
 There is no tool that opens a URL. A local stdio server also registers `phone_save_screenshot` (write a PNG or JPEG on that machine). Tool names follow [mobile-mcp](https://github.com/mobile-next/mobile-mcp).
 
+### Showing the phone live
+
+`phone_get_live_view_url` returns a URL that works like a shared screen: open it, or embed it.
+
+```html
+<iframe src="LIVE_VIEW_URL" allow="clipboard-read; clipboard-write"
+        style="width: 390px; height: 800px; border: 0"></iframe>
+```
+
+- A `view` link only shows the screen, and Phone Harness Cloud refuses input from it. A `control` link also takes taps, swipes, a mouse wheel and typing (on a phone, its Type button brings up the phone's own keyboard).
+- Add `&navbar=false` to the URL to show only the phone. In a sandboxed iframe, allow `allow-scripts allow-same-origin`.
+- When the link stops working (the phone stopped, the link expired or was turned off), the page posts `{type: "phone-harness-disconnected", reason}` to the window that embeds it.
+- The URL is the whole of its authority: anyone who has it can watch (or, for `control`, use) the phone until it ends. Share it like a password, and prefer a short `minutes` for control.
+
 ### Compatibility
 
 - `phone_start_device` with nothing named now starts the account's **saved** Android phone, or returns the session already running it, instead of a temporary emulator. This applies to every client. Apps and logins carry over between sessions, a second call reuses the running phone rather than starting another, and stopping it saves it (a minute or so) before it can start again. Pass `temporary: true` for the previous behavior; naming `platform`/`kind` or a `device_id` works as before.
-- Against a Phone Harness Cloud that does not offer screenshot links or handoffs yet, those tools say so instead of failing silently. An account without a saved phone gets the temporary emulator as before.
+- Against a Phone Harness Cloud that does not offer screenshot links, live view links or handoffs yet, those tools say so instead of failing silently. An account without a saved phone gets the temporary emulator as before.
 - The new tools return `structuredContent` with an output schema, and the same link in their text, for clients that read only text.
 
 ## FAQ
