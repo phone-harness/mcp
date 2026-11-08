@@ -80,6 +80,9 @@ def build_http_app(*, api: str | None, mcp_path: str, host: str, allowed_hosts: 
     if not oauth_issuer:
         from .auth import RequireBearer
         app = RequireBearer(app, mcp_path)
+    elif oauth_scope:
+        from .auth import AdvertiseScope
+        app = AdvertiseScope(app, oauth_scope, mcp_path)
     return app
 
 
