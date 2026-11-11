@@ -187,3 +187,17 @@ def test_transport_ignores_proxies_refuses_redirect_and_bounds_output(network_ap
     for url in ("http://public.example", "https://user:pass@public.example", "https://public.example/path"):
         with pytest.raises(PhoneError, match="HTTPS API origin"):
             network.request(Cloud(StaticToken("pck_test"), url), "GET", "/fixture")
+
+
+@pytest.mark.anyio
+async def test_unknown_top_level_keys_and_missing_fields_do_not_echo_keys(network_api, caplog):
+    async with connected(stdio_server(network_api)) as s:
+        by_name = {t.name: t for t in (await s.list_tools()).tools}
+        for name in ("phone_trust_cert", "phone_route", "phone_proxy_session", "phone_read_traffic"):
+            assert by_name[name].input_schema["additionalProperties"] is False
+            for args in ({"device_id": PHONE, "action": "status", "ca_key_pem": KEY}, {"ca_key_pem": KEY}):
+                result = await s.call_tool(name, args)
+                assert result.is_error
+                assert "SYNTHETIC-SECRET-MARKER" not in text_of(result)
+    assert not network_api.requests
+    assert "SYNTHETIC-SECRET-MARKER" not in caplog.text

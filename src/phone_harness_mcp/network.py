@@ -267,3 +267,13 @@ def register(server, cloud_for):
         if params:
             path += "?" + urlencode(params)
         return await call(cloud_for, ctx, "DELETE" if action == "purge" else "GET", path, har=action == "har")
+
+    # MCP builds a Pydantic argument model from each signature. Harden those
+    # four generated models as well as the nested configs: unknown top-level
+    # fields must fail, and validation must never echo a key-bearing input map.
+    for name in ("phone_trust_cert", "phone_route", "phone_proxy_session", "phone_read_traffic"):
+        tool = server._tool_manager.get_tool(name)
+        model = tool.fn_metadata.arg_model
+        model.model_config.update(extra="forbid", hide_input_in_errors=True)
+        model.model_rebuild(force=True)
+        tool.parameters = model.model_json_schema()
