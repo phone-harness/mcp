@@ -218,3 +218,26 @@ def test_oauth_mode_refuses_a_bearer_the_api_refuses(oauth_hosted):
     with pytest.raises(urllib.error.HTTPError) as e:
         urllib.request.urlopen(req, timeout=5)
     assert e.value.code == 401
+
+
+async def test_network_tools_use_each_hosted_callers_key_and_owner_scope(hosted, api, monkeypatch):
+    api.tokens["pck_other"] = {"uid": "u_other", "email": "other@example.invalid"}
+    original = api.route
+    def network_route(method, path, user, h):
+        if path.startswith("/me/devices/iph-fixture/traffic/"):
+            return (200, {"flows": [{"id": "1"}]}, None) if user["uid"] == "u_1" else (404, {"error": "No such traffic"}, None)
+        return original(method, path, user, h)
+    monkeypatch.setattr(api, "route", network_route)
+    for token, success in (("pck_test", True), ("pck_other", False), ("pck_test", True)):
+        async with httpx2.AsyncClient(headers={"Authorization": "Bearer " + token}, timeout=30) as http:
+            async with streamable_http_client(f"{hosted}/mcp", http_client=http) as (read, write, *_rest):
+                async with ClientSession(read, write) as s:
+                    await s.initialize()
+                    result = await s.call_tool("phone_read_traffic", {"device_id": "iph-fixture", "session_id": "a" * 32, "action": "list"})
+                    assert result.is_error is not success
+                    if success:
+                        assert '"id":"1"' in text_of(result)
+                    else:
+                        assert "HTTP 404" in text_of(result)
+    calls = [bearer for _, path, bearer in api.requests if path.startswith("/me/devices/")]
+    assert calls == ["pck_test", "pck_other", "pck_test"]

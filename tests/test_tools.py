@@ -9,6 +9,7 @@ from support import connected, start, stdio_server, text_of
 pytestmark = pytest.mark.anyio
 
 EXPECTED_TOOLS = {
+    "phone_trust_cert", "phone_route", "phone_proxy_session", "phone_read_traffic",
     "phone_list_available_devices", "phone_start_device", "phone_stop_device",
     "phone_get_screen_size", "phone_take_screenshot", "phone_save_screenshot",
     "phone_list_elements_on_screen", "phone_click_on_screen_at_coordinates",
