@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import functools
 import json
+import math
 import time
 from pathlib import Path
 from typing import Literal
@@ -68,6 +69,23 @@ async def _thread(fn, *args, **kwargs):
 
 def _point(value) -> int:
     return int(round(float(value)))
+
+
+def _seconds(name: str, value, hi: float) -> float:
+    """A duration in seconds, from 0 through `hi` inclusive."""
+    number = None
+    if not isinstance(value, bool) and isinstance(value, (int, float)):
+        number = float(value)
+    if number is None or not math.isfinite(number) or number < 0 or number > hi:
+        raise PhoneError(f"{name} must be between 0 and {hi:g} seconds.")
+    return number
+
+
+def _move_steps(value) -> int:
+    """How many move events divide a drag."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > 200:
+        raise PhoneError("steps must be an integer from 1 to 200.")
+    return value
 
 
 def _devices_text(live: list[dict], me: dict) -> str:
@@ -289,8 +307,11 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
     @server.tool(name="phone_swipe_on_screen", title="Swipe", annotations=TOUCH)
     async def swipe_on_screen(ctx: Context, device: str, direction: Literal["up", "down", "left", "right"],
                               x: float | None = None, y: float | None = None,
-                              distance: float | None = None) -> str:
-        """Swipe in a direction: the way the finger moves, so "up" reveals what is below. Starts at (x, y), or the screen center, and travels `distance` pixels (default 40% of the screen)."""
+                              distance: float | None = None,
+                              duration: float = 0.3, steps: int = 10) -> str:
+        """Swipe in a direction: the way the finger moves, so "up" reveals what is below. Starts at (x, y), or the screen center, and travels `distance` pixels (default 40% of the screen). `duration` is how long the drag takes, in seconds (default 0.3, from 0 to 10). `steps` is how many move events divide that drag (default 10, from 1 to 200). Both are passed to the phone. On an iPhone, `steps` is the number of move events along the line. Android applies `duration` and does not use `steps`."""
+        duration = _seconds("duration", duration, 10)
+        steps = _move_steps(steps)
         ph = phones(ctx)
         w = h = None
         if x is None or y is None or not distance:
@@ -308,14 +329,18 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
         x1, y1 = clamp(cx - dx / 2, w), clamp(cy - dy / 2, h)
         x2, y2 = clamp(cx + dx / 2, w), clamp(cy + dy / 2, h)
         await _thread(ph.op, device, "input.drag", x1=_point(x1), y1=_point(y1), x2=_point(x2), y2=_point(y2),
-                      duration=0.3, steps=10)
+                      duration=duration, steps=steps)
         return f"Swiped {direction} from ({_point(x1)}, {_point(y1)}) to ({_point(x2)}, {_point(y2)})."
 
     @server.tool(name="phone_type_keys", title="Type text", annotations=TOUCH)
-    async def type_keys(ctx: Context, device: str, text: str, submit: bool = False) -> str:
-        """Type text into the focused field. Tap the field first so the keyboard is up; text sent with nothing focused goes nowhere. `submit` presses Enter afterwards."""
+    async def type_keys(ctx: Context, device: str, text: str, submit: bool = False,
+                        keystrokes: bool = False, delay: float = 0.03) -> str:
+        """Type text into the focused field. Tap the field first so the keyboard is up; text sent with nothing focused goes nowhere. `submit` presses Enter afterwards. The whole string is pasted in one event unless `keystrokes` is true. Paste is the default: it is exact, it is how emoji and other non-US-layout characters get in, and it is what Android does. Set `keystrokes` true on an iPhone when the page must see one key at a time. Each US-layout character is then a key event, with `delay` seconds between keys (default 0.03, from 0 to 1). A character with no US keycode is rejected by the phone; paste that text instead. Android accepts `keystrokes` and `delay` and still inserts the text in one chunk. iPhone keystrokes also go through autocorrect, so leave `keystrokes` false when the wording must stay exact."""
+        if not isinstance(keystrokes, bool):
+            raise PhoneError("keystrokes must be true or false.")
+        delay = _seconds("delay", delay, 1)
         ph = phones(ctx)
-        await _thread(ph.op, device, "input.text", s=text)
+        await _thread(ph.op, device, "input.text", s=text, delay=delay, keystrokes=keystrokes)
         if submit:
             await _thread(ph.op, device, "input.keys", combo="enter")
         return f"Typed {len(text)} characters" + (" and pressed Enter." if submit else ".")

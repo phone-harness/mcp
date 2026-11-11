@@ -27,6 +27,16 @@ async def test_tool_names_follow_mobile_mcp(api):
     assert by_name["phone_take_screenshot"].annotations.read_only_hint is True
     assert by_name["phone_stop_device"].annotations.destructive_hint is True
     assert "device" in by_name["phone_click_on_screen_at_coordinates"].input_schema["required"]
+    typing = by_name["phone_type_keys"]
+    assert typing.input_schema["properties"]["keystrokes"]["default"] is False
+    assert typing.input_schema["properties"]["delay"]["default"] == 0.03
+    assert "keystrokes" not in typing.input_schema["required"]
+    assert "keystrokes" in typing.description and "Android" in typing.description
+    swipe = by_name["phone_swipe_on_screen"]
+    assert swipe.input_schema["properties"]["duration"]["default"] == 0.3
+    assert swipe.input_schema["properties"]["steps"]["default"] == 10
+    assert "duration" not in swipe.input_schema["required"]
+    assert "steps" in swipe.description and "Android" in swipe.description
 
 
 async def test_hosted_server_has_no_file_tool(api):
@@ -160,10 +170,68 @@ async def test_touch_tools_send_the_right_ops(api):
         ("input.press", {"x": 10, "y": 20, "duration": 1.5}),
         ("input.drag", {"x1": 195, "y1": 591, "x2": 195, "y2": 253, "duration": 0.3, "steps": 10}),
         ("input.drag", {"x1": 350, "y1": 100, "x2": 250, "y2": 100, "duration": 0.3, "steps": 10}),
-        ("input.text", {"s": "hello"}),
+        ("input.text", {"s": "hello", "delay": 0.03, "keystrokes": False}),
         ("input.keys", {"combo": "enter"}),
         ("nav.home", {}),
         ("nav.recents", {}),
+    ]
+
+
+async def test_type_can_send_keystrokes(api):
+    async with connected(stdio_server(api)) as s:
+        sid = await start(s)
+        api.ops.clear()
+        assert text_of(await s.call_tool("phone_type_keys",
+                                         {"device": sid, "text": "Hi", "keystrokes": True, "delay": 0.05})) \
+            == "Typed 2 characters."
+        assert text_of(await s.call_tool("phone_type_keys",
+                                         {"device": sid, "text": "go", "keystrokes": True, "delay": 0, "submit": True})) \
+            == "Typed 2 characters and pressed Enter."
+        await s.call_tool("phone_type_keys", {"device": sid, "text": "paste"})
+    assert [(op, kw) for _sid, op, kw in api.ops] == [
+        ("input.text", {"s": "Hi", "delay": 0.05, "keystrokes": True}),
+        ("input.text", {"s": "go", "delay": 0.0, "keystrokes": True}),
+        ("input.keys", {"combo": "enter"}),
+        ("input.text", {"s": "paste", "delay": 0.03, "keystrokes": False}),
+    ]
+
+
+async def test_type_delay_is_bounded(api):
+    async with connected(stdio_server(api)) as s:
+        sid = await start(s)
+        api.ops.clear()
+        for delay in (-0.01, 1.01):
+            r = await s.call_tool("phone_type_keys", {"device": sid, "text": "x", "delay": delay, "keystrokes": True})
+            assert r.is_error and "delay must be between 0 and 1 seconds" in text_of(r)
+        assert not (await s.call_tool("phone_type_keys", {"device": sid, "text": "a", "delay": 0})).is_error
+        assert not (await s.call_tool("phone_type_keys",
+                                      {"device": sid, "text": "b", "delay": 1, "keystrokes": True})).is_error
+    assert [kw for _sid, op, kw in api.ops if op == "input.text"] == [
+        {"s": "a", "delay": 0.0, "keystrokes": False},
+        {"s": "b", "delay": 1.0, "keystrokes": True},
+    ]
+
+
+async def test_swipe_duration_and_steps_pass_through(api):
+    async with connected(stdio_server(api)) as s:
+        sid = await start(s)
+        api.ops.clear()
+        text = text_of(await s.call_tool("phone_swipe_on_screen", {
+            "device": sid, "direction": "left", "x": 300, "y": 100, "distance": 100,
+            "duration": 0.8, "steps": 24,
+        }))
+        assert text == "Swiped left from (350, 100) to (250, 100)."
+        for args, needle in (({"duration": -0.1}, "duration"), ({"duration": 10.1}, "duration"),
+                             ({"steps": 0}, "steps"), ({"steps": 201}, "steps")):
+            r = await s.call_tool("phone_swipe_on_screen", {"device": sid, "direction": "up", **args})
+            assert r.is_error and needle in text_of(r)
+        assert not (await s.call_tool("phone_swipe_on_screen", {
+            "device": sid, "direction": "left", "x": 300, "y": 100, "distance": 100,
+            "duration": 0, "steps": 1,
+        })).is_error
+    assert [(op, kw) for _sid, op, kw in api.ops if op == "input.drag"] == [
+        ("input.drag", {"x1": 350, "y1": 100, "x2": 250, "y2": 100, "duration": 0.8, "steps": 24}),
+        ("input.drag", {"x1": 350, "y1": 100, "x2": 250, "y2": 100, "duration": 0.0, "steps": 1}),
     ]
 
 

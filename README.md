@@ -209,8 +209,8 @@ Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you
 | `phone_list_elements_on_screen` | Visible text with tap-ready centers (`text` or `json`). Accessibility tree on Android; text recognition on iPhone. |
 | `phone_click_on_screen_at_coordinates` | Tap `x`, `y`. |
 | `phone_long_press_on_screen_at_coordinates` | Press and hold `x`, `y` for `duration` milliseconds (default 800, clamped to 100–10000). |
-| `phone_swipe_on_screen` | Swipe. `direction` is the way the finger moves (`up` reveals what is below). From `x`, `y` or the center, for `distance` pixels or 40% of the screen. |
-| `phone_type_keys` | Type `text` into the focused field. `submit` presses Enter. |
+| `phone_swipe_on_screen` | Swipe. `direction` is the way the finger moves (`up` reveals what is below). From `x`, `y` or the center, for `distance` pixels or 40% of the screen. `duration` is seconds (default 0.3, from 0 to 10). `steps` is how many move events divide the drag (default 10, from 1 to 200). Android applies `duration` and does not use `steps`. |
+| `phone_type_keys` | Type `text` into the focused field. `submit` presses Enter. Pastes the whole string unless `keystrokes` is true. `keystrokes` types US-layout characters one by one on iPhone, `delay` seconds apart (default 0.03, from 0 to 1). Characters with no US keycode are rejected; paste those. Android accepts `keystrokes` and `delay` and still inserts the text in one chunk. |
 | `phone_press_button` | `HOME`, `BACK` (Android only), `APP_SWITCHER`, or `ENTER`. |
 | `phone_list_apps` | Installed apps: package ids on Android, bundle ids on an iPhone, when the phone can list them. |
 | `phone_launch_app` | Open an app by the name on its icon, or on Android by package id. |
