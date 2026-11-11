@@ -258,3 +258,10 @@ Report vulnerabilities per [SECURITY.md](SECURITY.md).
 ## License
 
 MIT
+
+## Phone network primitives
+
+Approved accounts can use `phone_trust_cert`, `phone_route`, `phone_proxy_session`
+and `phone_read_traffic` with their own account API key. See [the three network
+recipes](docs/network.md) for hosted capture, bring-your-own proxy and cert-only
+setup. These tools use an assigned phone ID; profile changes require it to be idle.

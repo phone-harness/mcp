@@ -26,6 +26,8 @@ from .phone import DEFAULT_MINUTES, READY_WAIT, PhoneError, Phones, Unsupported,
 
 INSTRUCTIONS = """Drive a Phone Harness Cloud phone: a real iPhone or an Android emulator, reached over HTTPS.
 
+Phone network tools (phone_trust_cert, phone_route, phone_proxy_session, phone_read_traffic) use the assigned device_id and require an enabled account API key. Trust and route changes need an idle phone; install both in one call before starting it.
+
 Start with phone_list_available_devices. If a phone is running, pass its id as `device` to every other tool. If none is, phone_start_device starts one. Cloud Android is pay as you go at 5 cents per minute; a cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM, or 20% off billed annually at $64/mo, $80/mo with eSIM) and is not billed by the minute. Call phone_stop_device when the task is done.
 
 To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked."""
@@ -140,6 +142,9 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
     server = MCPServer(name="phone-harness", title="Phone Harness", version=__version__,
                        instructions=INSTRUCTIONS, website_url="https://phone-harness.com",
                        auth=auth, token_verifier=token_verifier)
+
+    from .network import register as register_network
+    register_network(server, cloud_for)
 
     def phones(ctx) -> Phones:
         return Phones(cloud_for(ctx))
