@@ -14,6 +14,10 @@ EXPECTED_TOOLS = {
     "phone_list_elements_on_screen", "phone_click_on_screen_at_coordinates",
     "phone_long_press_on_screen_at_coordinates", "phone_swipe_on_screen", "phone_type_keys",
     "phone_press_button", "phone_list_apps", "phone_launch_app", "phone_get_foreground_app",
+    # the phone's temporary network settings: four steps, and the two that do
+    # the whole of a capture in one call
+    "phone_trust_cert", "phone_route", "phone_proxy_session", "phone_read_traffic",
+    "phone_capture_attach", "phone_capture_teardown",
 }
 
 
