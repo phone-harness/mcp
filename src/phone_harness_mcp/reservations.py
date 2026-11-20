@@ -200,8 +200,9 @@ def _pay_lines(reservation: dict) -> list[str]:
     lines = [PAY, url]
     if reservation.get("expires_at"):
         left = _in(reservation["expires_at"])
+        # By this machine's clock, which may be wrong: say so, and still give the link.
         lines.append(f"The link works for another {left}." if left else
-                     "The link has expired. Reserve again for a new one.")
+                     "The link has expired. If it no longer opens, reserve again for a new one.")
     return lines
 
 

@@ -560,6 +560,8 @@ def test_a_checkout_link_has_to_be_stripes():
 
 def test_an_expired_link_says_to_reserve_again():
     row = {**reservation(1), "expires_at": time.time() - 60}
-    assert reservations._pay_lines(row)[-1] == "The link has expired. Reserve again for a new one."
+    assert reservations._pay_lines(row) == [
+        reservations.PAY, row["checkout_url"],
+        "The link has expired. If it no longer opens, reserve again for a new one."]
     assert reservations._pay_lines({**row, "checkout_url": None}) == [
         "There is no payment link for it yet. Ask again with its reservation_id in a moment."]
