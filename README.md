@@ -228,7 +228,7 @@ An account with no cloud iPhone yet, or one that needs more phones, reserves the
 | `phone_list_reservations` | The account's reservations, newest first: status, place in the queue, deposit, and when it was paid (`text` or `json`). With `reservation_id`, one in full, with its quote and, while it is unpaid, its Checkout link. |
 | `phone_cancel_reservation` | Give up a place in the queue. `confirm` must be `true`: without it nothing is cancelled, and the answer says what would be given up and refunded. The deposit still held is refunded to the card that paid. Refused once every phone has been handed over, because that deposit went onto the first bill. |
 
-A reservation is `pending_payment` until the deposit is paid, then `queued` with a position. The plan starts when a phone is handed over, and the deposit comes off its first bill. An account can have five unpaid reservations an hour, and cancelling one does not free a place. Until the API has reservations, each of these tools says so and changes nothing.
+A reservation is `pending_payment` until the deposit is paid, then `queued` with a position. Places go in the order deposits were paid; nothing moves one up. A customer's first phone is at the intro price, once, and every other phone at the standard price. Cancelling refunds the deposit still held automatically, to the card that paid. The plan starts when a phone is handed over; the deposit comes off its first bill and is then no longer refundable. An account can have five unpaid reservations an hour, and cancelling one does not free a place. Until the API has reservations, each of these tools says so and changes nothing.
 
 ## FAQ
 

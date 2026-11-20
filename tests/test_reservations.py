@@ -97,6 +97,15 @@ async def test_the_deposit_is_stated_once_in_each_place_and_the_quote_is_what_co
         assert "five unpaid reservations an hour" in text.lower(), where
         assert "cancelling one does not free a place" in text.lower(), where
     assert "$" not in CHANGELOG.split("## Unreleased", 1)[1].split("\n## ", 1)[0]   # a changelog names no price
+    # What a model, or a person reading the README, has to know before reserving or cancelling for someone.
+    said = {where: " ".join(text.split()) for where, text in stated.items()}
+    for where in ("the tool", "the instructions", "README.md"):
+        assert "intro price" in said[where] and "order deposits were paid" in said[where], where
+    for where in ("the instructions", "README.md"):
+        assert "automatically" in said[where] and "to the card that paid" in said[where], where
+        assert "first bill and is" in said[where] and "no longer refundable" in said[where], where
+    assert "not a price from memory" in said["the instructions"]
+    assert "the website has no list of reservations" in said["the instructions"]
     for name in ("phone_list_reservations", "phone_cancel_reservation"):
         assert "$" not in tools[name].description, name
 
