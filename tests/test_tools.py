@@ -15,6 +15,10 @@ EXPECTED_TOOLS = {
     "phone_long_press_on_screen_at_coordinates", "phone_swipe_on_screen", "phone_type_keys",
     "phone_press_button", "phone_list_apps", "phone_launch_app", "phone_get_foreground_app",
 }
+# Asking for phones the account does not have yet; none of the three pays. Added
+# beside the set, not inside it, so that another branch adding its own tools to
+# the set (PHO-310's network tools) merges with this one and both sets stay.
+EXPECTED_TOOLS |= {"phone_reserve", "phone_list_reservations", "phone_cancel_reservation"}
 
 
 async def test_tool_names_follow_mobile_mcp(api):

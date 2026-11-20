@@ -1,0 +1,801 @@
+"""The reservation tools against the fake API: what they send, what they say, and that none of them pays.
+
+No network, no Stripe, no money. `api.reservation_calls` holds each request the
+server made, with its headers and body.
+"""
+import json
+import re
+import socket
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx2
+import pytest
+import uvicorn
+from fake_api import CHECKOUT, GRANTED_REFUSAL, reservation, rid
+from mcp.client.session import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+from support import connected, stdio_server, text_of
+
+from phone_harness_mcp import reservations
+from phone_harness_mcp.cli import build_http_app
+from phone_harness_mcp.cloud import local_credentials
+from phone_harness_mcp.server import INSTRUCTIONS, build_server, stdio_cloud
+
+pytestmark = pytest.mark.anyio
+
+ROOT = Path(__file__).resolve().parents[1]
+README = (ROOT / "README.md").read_text()
+SELF_HOSTING = (ROOT / "docs" / "self-hosting.md").read_text()
+CHANGELOG = (ROOT / "CHANGELOG.md").read_text()
+DEPOSIT = "$20"            # stated in words only; every amount in a result is the API's
+# Which phones are reserved, in the words every copy uses. Its figure is the Android plan's.
+IPHONES_ONLY = ("Reservations are for iPhones only (with or without eSIM). "
+                "Cloud Android emulators are on the $20 plan and are not reserved.")
+USE_CASE = "Testing our listings app on real iPhones."
+RESERVE = {"phone_type": "iphone", "plan": "monthly", "quantity": 2, "use_case": USE_CASE}
+TOOLS = ("phone_reserve", "phone_list_reservations", "phone_cancel_reservation")
+KEY = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+
+
+async def call(session, tool, **args):
+    return await session.call_tool(tool, args)
+
+
+async def cancel(session, reservation_id, confirm=True):
+    """Cancel through the tool. `confirm` is the user's yes, and the tool needs it."""
+    return await session.call_tool("phone_cancel_reservation", {"reservation_id": reservation_id, "confirm": confirm})
+
+
+def key_in(text):
+    return re.search(r'idempotency_key="([^"]+)"', text).group(1)
+
+
+# --- what the tools are -------------------------------------------------------------
+
+
+async def test_three_tools_that_say_they_never_pay(api):
+    async with connected(stdio_server(api)) as s:
+        tools = {t.name: t for t in (await s.list_tools()).tools}
+    assert set(TOOLS) <= set(tools)
+    reserve, listing, cancel_tool = (tools[name] for name in TOOLS)
+    schema = reserve.input_schema
+    assert schema["required"] == ["phone_type", "plan", "use_case"]
+    assert schema["properties"]["quantity"]["default"] == 1     # one phone unless it is told more, like the CLI
+    assert schema["properties"]["phone_type"]["enum"] == ["iphone", "iphone_esim"]
+    for tool in (reserve, listing, cancel_tool):
+        assert "android" not in json.dumps(tool.input_schema).lower(), tool.name    # nowhere a client can pick it
+    assert schema["properties"]["plan"]["enum"] == ["monthly", "annual"]
+    assert {"first_name", "last_name", "idempotency_key"} <= set(schema["properties"])
+    assert not {"first_name", "last_name"} & set(schema["required"])            # a name is an override, never needed
+    assert "email" not in schema["properties"]                 # the account's address is the API's to fill in
+    assert "never pays" in reserve.description and "a person must open the link" in reserve.description
+    assert reserve.annotations.read_only_hint is False and reserve.annotations.destructive_hint is False
+    assert listing.annotations.read_only_hint is True
+    assert "required" not in listing.input_schema               # no id lists them all
+    assert cancel_tool.annotations.destructive_hint is True and cancel_tool.annotations.idempotent_hint is True
+    assert cancel_tool.input_schema["required"] == ["reservation_id", "confirm"]
+    assert cancel_tool.input_schema["properties"]["confirm"]["type"] == "boolean"
+    assert "only when the user has asked" in cancel_tool.description
+    assert "`confirm` must be true" in cancel_tool.description
+    assert "only a person can pay it" in INSTRUCTIONS and "confirm=true" in INSTRUCTIONS
+
+
+async def test_the_deposit_is_stated_once_in_each_place_and_the_quote_is_what_counts():
+    """The one figure these tools and their docs name. The API sends the real amount with every quote."""
+    figure = re.compile(r"\$\d+")
+    tools = {t.name: t for t in await build_server(cloud_for=lambda ctx: None, allow_files=False).list_tools()}
+    reserve = tools["phone_reserve"]
+    paragraph = INSTRUCTIONS.rsplit("\n\n", 1)[1]             # the one about reserving
+    stated = {"the tool": reserve.description, "the instructions": paragraph,
+              "README.md": README.split("### Reserving a phone", 1)[1].split("\n## ", 1)[0],
+              "docs/self-hosting.md": "\n".join(line for line in SELF_HOSTING.splitlines()
+                                                 if re.search("reserv|deposit", line, re.IGNORECASE))}
+    assert reservations.IPHONES_ONLY == IPHONES_ONLY
+    for where, text in stated.items():
+        text = " ".join(text.split())
+        assert text.count(IPHONES_ONLY) == 1, where                      # only iPhones, in the same words
+        text = text.replace(IPHONES_ONLY, "")                            # that figure is the Android plan's
+        assert figure.findall(text) == [DEPOSIT], where                  # said once, so it changes in one place
+        assert not re.search(r"(?i)iphone_esim`?(?: \([^)]*\))?,? (?:or|\|) `?android", text), where
+        assert f"{DEPOSIT} per phone refundable deposit" in text, where
+        assert re.search(r"quote\b[^.]*\bauthoritative", text), where
+        assert "five unpaid reservations an hour" in text.lower(), where
+        assert "cancelling one does not free a place" in text.lower(), where
+    unreleased = " ".join(CHANGELOG.split("## Unreleased", 1)[1].split("\n## ", 1)[0].split())
+    assert "$" not in unreleased                               # a changelog names no price
+    assert "Reservations are for iPhones only (with or without eSIM)" in unreleased
+    # What a model, or a person reading the README, has to know before reserving or cancelling for someone.
+    said = {where: " ".join(text.split()) for where, text in stated.items()}
+    for where in ("the tool", "the instructions", "README.md"):
+        assert "intro price" in said[where] and "order deposits were paid" in said[where], where
+    for where in ("the instructions", "README.md"):
+        assert "automatically" in said[where] and "to the card that paid" in said[where], where
+        assert "first bill and is" in said[where] and "no longer refundable" in said[where], where
+    assert "not a price from memory" in said["the instructions"]
+    assert "the website has no list of reservations" in said["the instructions"]
+    for name in ("phone_list_reservations", "phone_cancel_reservation"):
+        assert "$" not in tools[name].description, name
+
+
+# --- reserving ----------------------------------------------------------------------
+
+
+async def test_reserve_sends_the_request_the_bearer_and_a_key_of_its_own(api):
+    async with connected(stdio_server(api)) as s:
+        first = await call(s, "phone_reserve", **RESERVE)
+        second = await call(s, "phone_reserve", **RESERVE)
+    assert not first.is_error and not second.is_error, text_of(first) + text_of(second)
+    (method, path, headers, body), (_, _, again, _) = api.reservation_calls
+    assert (method, path) == ("POST", "/reservations")
+    assert body == RESERVE
+    assert headers["authorization"] == "Bearer pck_test"
+    assert headers["content-type"] == "application/json"
+    assert KEY.match(headers["idempotency-key"])
+    assert again["idempotency-key"] != headers["idempotency-key"]        # one key for each call
+    assert len(api.reservations) == 2
+    assert key_in(text_of(first)) == headers["idempotency-key"]
+
+
+async def test_the_result_is_the_link_the_quote_and_that_a_person_must_pay(api):
+    async with connected(stdio_server(api)) as s:
+        text = text_of(await call(s, "phone_reserve", **{**RESERVE, "quantity": 3}))
+    assert f"Started reservation {rid(1)}: 3 x Cloud iPhone, monthly." in text
+    assert "It holds no place in the queue yet: nothing is reserved until the deposit is paid." in text
+    assert "A person has to open this Stripe Checkout link and pay the deposit." in text
+    assert "This tool cannot pay, and you must not pay or enter card details for them:" in text
+    assert CHECKOUT + "000001" in text.splitlines()
+    assert "The link works for another 24 hours." in text
+    assert "- Deposit due now: $60.00 (3 x $20.00), refundable in full while the reservation is queued." in text
+    assert ("- First month, charged when the phones are handed over: 1 x $50.00 (intro price, once per customer) "
+            "+ 2 x $80.00 (standard price) = $210.00. The deposit comes off it, leaving $150.00.") in text
+    assert "You are in the queue" not in text and "position" not in text.lower()
+
+
+async def test_an_annual_plan(api):
+    async with connected(stdio_server(api)) as s:
+        annual = text_of(await call(s, "phone_reserve", phone_type="iphone_esim", plan="annual", quantity=2,
+                                    use_case=USE_CASE))
+    assert "2 x Cloud iPhone with eSIM, annual" in annual
+    assert ("First year, charged when the phones are handed over: 1 x $624.00 (intro price, once per customer) "
+            "+ 1 x $960.00 (standard price) = $1,584.00. The deposit comes off it, leaving $1,544.00.") in annual
+    assert api.reservation_calls[0][3]["phone_type"] == "iphone_esim"
+
+
+@pytest.mark.parametrize("asked", ["android", "Android", "android_emulator"])
+async def test_an_android_is_not_reserved_and_nothing_is_sent(api, asked):
+    async with connected(stdio_server(api)) as s:
+        r = await call(s, "phone_reserve", **{**RESERVE, "phone_type": asked})
+    assert r.is_error
+    assert text_of(r) == f"Error executing tool phone_reserve: {IPHONES_ONLY}"
+    assert api.reservation_calls == [] and api.reservations == {}
+
+
+@pytest.mark.parametrize("change, needle", [
+    ({"quantity": 0}, "quantity must be between 1 and 50"),
+    ({"quantity": 51}, "quantity must be between 1 and 50"),
+    ({"quantity": -2}, "quantity must be between 1 and 50"),
+    ({"quantity": "many"}, "quantity"),
+    ({"use_case": ""}, "use_case is required"),
+    ({"use_case": "   "}, "use_case is required"),
+    ({"use_case": "x" * 2001}, "the most is 2000"),
+    ({"phone_type": "ipad"}, "phone_type must be iphone or iphone_esim, not 'ipad'"),
+    ({"phone_type": 7}, "phone_type"),
+    ({"plan": "weekly"}, "'monthly' or 'annual'"),
+    ({"idempotency_key": "short"}, "16 to 128"),
+    ({"idempotency_key": "has spaces in the key!"}, "16 to 128"),
+])
+async def test_arguments_are_checked_before_anything_is_sent(api, change, needle):
+    async with connected(stdio_server(api)) as s:
+        r = await call(s, "phone_reserve", **{**RESERVE, **change})
+    assert r.is_error and needle in text_of(r), text_of(r)
+    assert api.reservation_calls == [] and api.reservations == {}
+
+
+async def test_quantity_is_one_when_it_is_not_said(api):
+    args = {k: v for k, v in RESERVE.items() if k != "quantity"}
+    async with connected(stdio_server(api)) as s:
+        r = await call(s, "phone_reserve", **args)
+    assert not r.is_error, text_of(r)
+    assert api.reservation_calls[0][3] == {**args, "quantity": 1}
+    assert f"Started reservation {rid(1)}: 1 x Cloud iPhone, monthly." in text_of(r)
+    assert "- Deposit due now: $20.00 (1 x $20.00)" in text_of(r)
+
+
+async def test_a_key_that_is_given_repeats_the_same_reservation(api):
+    key = "retry-key_0123456789"
+    async with connected(stdio_server(api)) as s:
+        first = await call(s, "phone_reserve", **RESERVE, idempotency_key=key)
+        again = await call(s, "phone_reserve", **RESERVE, idempotency_key=key)
+        other = await call(s, "phone_reserve", **{**RESERVE, "quantity": 5}, idempotency_key=key)
+    assert not first.is_error and not again.is_error
+    assert [c[2]["idempotency-key"] for c in api.reservation_calls] == [key, key, key]
+    assert f"Started reservation {rid(1)}" in text_of(first) and f"Started reservation {rid(1)}" in text_of(again)
+    assert other.is_error and "already used for a different request" in text_of(other)
+    assert len(api.reservations) == 1
+
+
+async def test_a_key_whose_deposit_is_already_paid_says_where_it_stands(api):
+    key = "paid-already_0123456789"
+    row = api.hold(reservation(1, quantity=2, status="queued", position=4, paid_days_ago=2))
+    api.reservation_keys[("u_1", key)] = (RESERVE, row["reservation_id"])
+    async with connected(stdio_server(api)) as s:
+        text = text_of(await call(s, "phone_reserve", **RESERVE, idempotency_key=key))
+    assert "already has a reservation; no new one was started" in text
+    assert "Status: queued." in text and "Position 4 in the queue." in text
+    assert "checkout.stripe.com" not in text and "Started reservation" not in text
+
+
+async def test_a_name_is_optional_and_overrides_the_accounts_when_given(api):
+    async with connected(stdio_server(api)) as s:
+        plain = await call(s, "phone_reserve", **RESERVE)                  # nothing said: the account's name
+        named = await call(s, "phone_reserve", **RESERVE, first_name=" Dana ", last_name="Okafor")
+        half = await call(s, "phone_reserve", **RESERVE, last_name="Lovelace", first_name="  ")
+        api.account_name = None                                            # no name on file, and none is needed
+        bare = await call(s, "phone_reserve", **RESERVE)
+    for r in (plain, named, half, bare):
+        assert not r.is_error, text_of(r)
+    sent = [c[3] for c in api.reservation_calls]
+    assert sent == [RESERVE, {**RESERVE, "first_name": "Dana", "last_name": "Okafor"},
+                    {**RESERVE, "last_name": "Lovelace"}, RESERVE]          # a blank is not sent
+    assert [api.reserved_names[rid(n)] for n in (1, 2, 3, 4)] == [
+        ["Ada", "King"], ["Dana", "Okafor"], ["Ada", "Lovelace"], [None, None]]
+    assert all("email" not in body for body in sent)
+
+
+async def test_a_lost_answer_is_asked_for_again_under_the_same_key(api):
+    api.reservation_drop = 1
+    async with connected(stdio_server(api)) as s:
+        r = await call(s, "phone_reserve", **RESERVE)
+    assert not r.is_error, text_of(r)
+    first, second = api.reservation_calls
+    assert first[2]["idempotency-key"] == second[2]["idempotency-key"] and first[3] == second[3]
+    assert len(api.reservations) == 1                                    # one reservation, not two
+
+
+async def test_an_api_that_cannot_be_reached_says_how_to_continue(api):
+    api.reservation_drop = 2
+    async with connected(stdio_server(api)) as s:
+        r = await call(s, "phone_reserve", **RESERVE)
+    text = text_of(r)
+    assert r.is_error and "could not reach" in text
+    assert key_in(text) == api.reservation_calls[0][2]["idempotency-key"]
+    assert "instead of starting a second reservation" in text
+
+
+@pytest.mark.parametrize("fail, needles", [
+    ((403, {"error": "Reservations are not open yet.", "code": "reservations_closed"}, None),
+     ["Reservations are not open yet."]),
+    ((403, {"error": "That phone and plan cannot be reserved yet.", "code": "plan_unavailable"}, None),
+     ["That phone and plan cannot be reserved yet."]),
+    ((429, {"error": "Too many unfinished reservations. Finish one, or try again in an hour.",
+            "code": "rate_limited", "retry_after_seconds": 3600}, {"Retry-After": "3600"}),
+     ["Too many unfinished reservations", "Cancelling one does not free a place; paying for one does."]),
+    ((400, {"error": "A first name is too long"}, None), ["A first name is too long"]),
+    ((403, {"error": "this sign-in can drive phones, not manage the account; use the dashboard or an API key",
+            "code": "scope_limited"}, None), ["use the dashboard or an API key"]),
+    ((400, {"error": "Choose between 1 and 50 phones"}, None), ["Choose between 1 and 50 phones"]),
+    # What the API says of a phone it does not reserve, should these tools ever offer one it has dropped.
+    ((400, {"error": "Cloud Android cannot be reserved. Choose a phone: iphone, iphone_esim",
+            "code": "phone_not_reservable"}, None),
+     ["Cloud Android cannot be reserved. Choose a phone: iphone, iphone_esim"]),
+    ((502, {"error": "Stripe could not complete this request; try again shortly.", "code": "payments_unavailable"},
+      None), ["Stripe could not complete this request", "Nothing was charged", 'idempotency_key="']),
+    ((500, {"error": "The phone service could not complete this request."}, None),
+     ["answered 500", "could not complete this request"]),
+])
+async def test_a_refusal_to_reserve_is_passed_on_in_the_apis_words(api, fail, needles):
+    api.reservation_fail = fail
+    async with connected(stdio_server(api)) as s:
+        r = await call(s, "phone_reserve", **RESERVE)
+    assert r.is_error
+    for needle in needles:
+        assert needle in text_of(r), text_of(r)
+    assert api.reservations == {}
+
+
+# What an API with no reservation routes answers. The first is phone-cloud's own
+# (a signed-in request for a path it does not have); the others are what a
+# proxy or an older server in front of it might say instead.
+NOT_FOUND = {
+    "the API's own": (b'{"error": "no route %s %s"}', "application/json"),
+    "a page": (b"<html><body><h1>404 Not Found</h1></body></html>", "text/html"),
+    "nothing": (b"", "text/plain"),
+    "other JSON": (b'{"detail": "Not Found"}', "application/json"),
+}
+
+
+@pytest.fixture(params=sorted(NOT_FOUND))
+def no_reservations(request):
+    """A stub of an API from before reservations: every request is a 404."""
+    body, content_type = NOT_FOUND[request.param]
+    seen = []
+
+    class Stub(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def answer(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            if n:
+                self.rfile.read(n)
+            seen.append((self.command, self.path))
+            raw = body % (self.command.encode(), self.path.encode()) if b"%s" in body else body
+            self.send_response(404)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        do_GET = do_POST = do_DELETE = answer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield SimpleNamespace(url=f"http://127.0.0.1:{server.server_address[1]}", seen=seen)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(3)
+
+
+NOT_LIVE = ("This Phone Harness Cloud API does not take reservations yet, so a phone cannot be reserved, listed or "
+            "cancelled through it. Nothing was changed.")
+
+
+async def test_every_tool_says_so_when_the_api_has_no_reservations(no_reservations):
+    """Until reservations are live every path under /reservations is a 404. That is not "no
+    reservation of yours has that id", whatever the 404 looks like and whichever tool met it."""
+    async with connected(stdio_server(no_reservations)) as s:
+        results = {
+            "reserve": await call(s, "phone_reserve", **RESERVE),
+            "list": await call(s, "phone_list_reservations"),
+            "list as json": await call(s, "phone_list_reservations", format="json"),
+            "one": await call(s, "phone_list_reservations", reservation_id=rid(1)),
+            "cancel, not confirmed": await cancel(s, rid(1), confirm=False),
+            "cancel": await cancel(s, rid(1)),
+        }
+    for name, r in results.items():
+        text = text_of(r)
+        assert r.is_error, name
+        assert text.endswith(NOT_LIVE), (name, text)
+        for wrong in ("No reservation", "on this account", "no route", "404", "Not Found", "Started", "Cancelled"):
+            assert wrong not in text, (name, wrong, text)
+    # The cancel reached the API once and was a 404 there too: nothing was cancelled anywhere.
+    assert no_reservations.seen == [
+        ("POST", "/reservations"), ("GET", "/reservations"), ("GET", "/reservations"),
+        ("GET", f"/reservations/{rid(1)}"), ("GET", "/reservations"),          # a 404 for one id: is it the id, or the API?
+        ("GET", f"/reservations/{rid(1)}"), ("GET", "/reservations"),
+        ("POST", f"/reservations/{rid(1)}/cancel"), ("GET", "/reservations")]
+
+
+async def test_the_fake_api_without_reservations_reads_the_same(api):
+    """The same through the fake that plays the rest of the API (sign-in, `/me`, sessions)."""
+    api.reservations_live = False
+    async with connected(stdio_server(api)) as s:
+        results = [await call(s, "phone_reserve", **RESERVE), await call(s, "phone_list_reservations"),
+                   await call(s, "phone_list_reservations", reservation_id=rid(1)),
+                   await cancel(s, rid(1), confirm=False), await cancel(s, rid(1))]
+        phones = await call(s, "phone_list_available_devices")
+    for r in results:
+        assert r.is_error and text_of(r).endswith(NOT_LIVE), text_of(r)
+    assert not phones.is_error and "No phone is running" in text_of(phones)   # the phone tools are not affected
+    assert api.reservations == {}
+
+
+async def test_a_404_for_one_id_on_an_api_that_has_reservations_is_that_id(api):
+    api.hold(reservation(1, status="queued", position=1, paid_days_ago=1))
+    async with connected(stdio_server(api)) as s:
+        unknown = await call(s, "phone_list_reservations", reservation_id=rid(9))
+        asked = len(api.reservation_calls)
+        api.reservation_fail = (404, {"error": "no route GET /reservations/rsv_zz"}, None)   # an id the API cannot route
+        odd = await call(s, "phone_list_reservations", reservation_id="rsv_zz")
+    assert unknown.is_error and f"No reservation {rid(9)} on this account" in text_of(unknown)
+    assert asked == 1                                           # the API's own "No such reservation" needs no second look
+    assert odd.is_error and "No reservation rsv_zz on this account" in text_of(odd)
+    assert "does not take reservations yet" not in text_of(odd)
+    assert [c[:2] for c in api.reservation_calls[1:]] == [("GET", "/reservations/rsv_zz"), ("GET", "/reservations")]
+
+
+@pytest.mark.parametrize("answer", [{}, {"ok": True}, []])
+async def test_an_answer_that_is_not_a_reservation_is_not_passed_off_as_one(api, answer):
+    api.hold(reservation(1, status="queued", position=1, paid_days_ago=1))
+    async with connected(stdio_server(api)) as s:
+        api.reservation_fail = (200, answer, None)
+        made = await call(s, "phone_reserve", **RESERVE)
+        api.reservation_fail = (200, answer, None)
+        read = await call(s, "phone_list_reservations", reservation_id=rid(1))
+        api.reservation_fail = (200, answer, None)
+        gone = await cancel(s, rid(1))
+    for r in (made, read, gone):
+        assert r.is_error and "something that is not a reservation" in text_of(r), text_of(r)
+    assert 'idempotency_key="' in text_of(made)
+    assert "Started reservation" not in text_of(made) and "Cancelled" not in text_of(gone)
+
+
+@pytest.mark.parametrize("bad", [
+    "https://checkout.stripe.com.example.net/pay", "http://checkout.stripe.com/c/pay/x",
+    "https://checkout.stripe.com@example.net/pay", "file:///etc/passwd",
+    "https://example.net/?next=https://checkout.stripe.com/",
+])
+async def test_a_link_that_is_not_stripe_checkout_is_never_handed_over(api, bad):
+    api.checkout = bad
+    async with connected(stdio_server(api)) as s:
+        made = await call(s, "phone_reserve", **RESERVE)
+        read = await call(s, "phone_list_reservations", reservation_id=rid(1))
+    assert made.is_error and "is not a Stripe Checkout page" in text_of(made)
+    assert "is not a Stripe Checkout page" in text_of(read)
+    assert bad not in text_of(made) and bad not in text_of(read)
+    assert "A person has to open" not in text_of(read)
+
+
+# --- listing ------------------------------------------------------------------------
+
+
+async def test_the_list_says_where_each_one_stands(api):
+    api.hold(
+        reservation(1, "iphone", "monthly", 3, "queued", position=4, paid_days_ago=2),
+        reservation(2, "iphone_esim", "annual", 1, "pending_payment"),
+        reservation(3, "android", "monthly", 2, "cancelled", paid_days_ago=5),
+        reservation(4, "iphone", "monthly", 3, "queued", position=1, granted=1, paid_days_ago=9),
+        reservation(5, "iphone", "annual", 1, "granted", granted=1, paid_days_ago=30),
+        reservation(6, "iphone", "monthly", 2, "cancelling", paid_days_ago=1),
+        reservation(7, "iphone", "monthly", 1, "cancelled"),
+    )
+    async with connected(stdio_server(api)) as s:
+        text = text_of(await call(s, "phone_list_reservations"))
+        as_json = json.loads(text_of(await call(s, "phone_list_reservations", format="json")))
+    head, *lines = text.splitlines()
+    assert head == "7 reservations, newest first:"
+    assert [line.split(":")[0] for line in lines] == [f"- {rid(n)}" for n in (7, 6, 5, 4, 3, 2, 1)]
+    by_id = {line.split(":")[0][2:]: line.split(": ", 1)[1] for line in lines}
+    assert by_id[rid(1)] == ("3 x Cloud iPhone, monthly. queued, position 4 in the queue; "
+                             "deposit of $60.00 paid 2 days ago, $60.00 refundable.")
+    assert by_id[rid(2)] == ("1 x Cloud iPhone with eSIM, annual. pending_payment; deposit of $20.00 not paid. "
+                             "It holds no place until a person pays; pass its reservation_id to get the "
+                             "Checkout link.")
+    # A phone these tools do not reserve, made elsewhere: named by the API's own word.
+    assert by_id[rid(3)] == ("2 x android, monthly. cancelled; deposit of $40.00 paid 5 days ago, "
+                             "$40.00 refunded.")
+    assert by_id[rid(4)] == ("3 x Cloud iPhone, monthly. queued, position 1 in the queue, 1 of 3 handed over, "
+                             "2 still waiting; deposit of $60.00 paid 9 days ago, $40.00 refundable, "
+                             "$20.00 went onto a first bill.")
+    assert by_id[rid(5)] == ("1 x Cloud iPhone, annual. granted, 1 of 1 handed over; deposit of $20.00 paid "
+                             "30 days ago, $20.00 went onto a first bill.")
+    assert by_id[rid(6)] == ("2 x Cloud iPhone, monthly. cancelling; deposit of $40.00 paid 1 day ago, "
+                             "$40.00 refund not confirmed yet.")
+    assert by_id[rid(7)] == "1 x Cloud iPhone, monthly. cancelled; nothing was charged."
+    assert "checkout.stripe.com" not in text                   # a link is given with one reservation, not in the list
+    assert [row["reservation_id"] for row in as_json] == [rid(n) for n in (7, 6, 5, 4, 3, 2, 1)]
+    assert as_json[-1]["deposit"]["paid_cents"] == 6000 and "uid" not in as_json[-1]
+    assert [c[:2] for c in api.reservation_calls] == [("GET", "/reservations")] * 2
+    assert api.reservation_calls[0][2]["authorization"] == "Bearer pck_test"
+
+
+async def test_no_reservations(api):
+    async with connected(stdio_server(api)) as s:
+        assert text_of(await call(s, "phone_list_reservations")) == \
+            "No reservations on this account. phone_reserve starts one."
+        assert json.loads(text_of(await call(s, "phone_list_reservations", format="json"))) == []
+        api.hold(reservation(1, status="queued", position=1, paid_days_ago=1))
+        assert text_of(await call(s, "phone_list_reservations")).splitlines()[0] == "1 reservation:"
+
+
+async def test_one_reservation_in_full(api):
+    api.hold(reservation(1, quantity=3, status="queued", position=4, paid_days_ago=2), reservation(2, quantity=2),
+             reservation(3, quantity=3, status="queued", position=1, granted=1, paid_days_ago=9))
+    async with connected(stdio_server(api)) as s:
+        queued = text_of(await call(s, "phone_list_reservations", reservation_id=rid(1)))
+        unpaid = text_of(await call(s, "phone_list_reservations", reservation_id=rid(2)))
+        partly = text_of(await call(s, "phone_list_reservations", reservation_id=rid(3)))
+        as_json = json.loads(text_of(await call(s, "phone_list_reservations", reservation_id=rid(2), format="json")))
+        missing = await call(s, "phone_list_reservations", reservation_id=rid(99))
+    assert api.reservation_calls[0][:2] == ("GET", "/reservations/" + rid(1))
+    assert queued.splitlines() == [
+        f"Reservation {rid(1)}: 3 x Cloud iPhone, monthly.",
+        "Status: queued. You are in the queue. Cancel any time and the deposit comes back in full.",
+        "Position 4 in the queue.",
+        "Deposit of $60.00 paid 2 days ago, $60.00 refundable.",
+        ("First month, charged when the phones are handed over: 1 x $50.00 (intro price, once per customer) + "
+         "2 x $80.00 (standard price) = $210.00. The deposit comes off it, leaving $150.00."),
+        ("phone_cancel_reservation (with confirm=true, once the user agrees) gives it up and refunds the "
+         "deposit still held.")]
+    assert "Status: pending_payment." in unpaid
+    assert "A person has to open this Stripe Checkout link and pay the deposit." in unpaid
+    assert CHECKOUT + "000002" in unpaid.splitlines()
+    assert "- Deposit due now: $40.00 (2 x $20.00), refundable in full while the reservation is queued." in unpaid
+    assert "1 of 3 handed over, 2 still waiting." in partly
+    assert "Deposit of $60.00 paid 9 days ago, $40.00 refundable, $20.00 went onto a first bill." in partly
+    assert as_json["reservation_id"] == rid(2) and as_json["checkout_url"] == CHECKOUT + "000002"
+    assert missing.is_error and f"No reservation {rid(99)} on this account" in text_of(missing)
+
+
+async def test_a_reservation_for_a_phone_these_tools_do_not_reserve_is_still_read_and_cancelled(api):
+    """One made while an Android was still offered stays on the account. It has no price, so its quote is the deposit."""
+    api.hold(reservation(1, "android", "monthly", 2, "queued", position=3, paid_days_ago=1))
+    async with connected(stdio_server(api)) as s:
+        one = text_of(await call(s, "phone_list_reservations", reservation_id=rid(1)))
+        gone = await cancel(s, rid(1))
+    assert f"Reservation {rid(1)}: 2 x android, monthly." in one
+    assert "Position 3 in the queue." in one
+    assert "First month: the price is confirmed before the phones are handed over." in one
+    assert not gone.is_error and "$40.00 is being refunded to the card that paid" in text_of(gone)
+
+
+@pytest.mark.parametrize("bad", ["../sessions", "rsv_", "rsv_abc/cancel", "rsv_abc?x=1", " ", "sid_0001"])
+async def test_an_id_that_is_not_one_is_refused_before_anything_is_sent(api, bad):
+    async with connected(stdio_server(api)) as s:
+        read = await call(s, "phone_list_reservations", reservation_id=bad)
+        gone = await cancel(s, bad)
+    assert read.is_error and gone.is_error
+    assert "reservation_id is an id like rsv_" in text_of(gone)
+    assert api.reservation_calls == []
+
+
+# --- cancelling ---------------------------------------------------------------------
+
+
+async def test_cancel_without_confirm_cancels_nothing_and_says_what_it_would_do(api):
+    api.hold(reservation(1, quantity=2, status="queued", position=4, paid_days_ago=2), reservation(2, quantity=3),
+             reservation(3, quantity=3, status="queued", position=1, granted=1, paid_days_ago=9),
+             reservation(4, status="granted", granted=1, paid_days_ago=20))
+    async with connected(stdio_server(api)) as s:
+        missing = await s.call_tool("phone_cancel_reservation", {"reservation_id": rid(1)})
+        queued = await cancel(s, rid(1), confirm=False)
+        unpaid = await cancel(s, rid(2), confirm=False)
+        partly = await cancel(s, rid(3), confirm=False)
+        handed = await cancel(s, rid(4), confirm=False)
+    assert missing.is_error and "confirm" in text_of(missing)                # required: the call is refused outright
+    for r in (queued, unpaid, partly, handed):
+        assert r.is_error and "Not cancelled: confirm is not true." in text_of(r), text_of(r)
+        assert "call phone_cancel_reservation again with confirm=true only if they say yes" in text_of(r)
+    assert (f"Reservation {rid(1)} is queued: 2 x Cloud iPhone, monthly, position 4 in the queue. Cancelling gives "
+            "up that place and refunds $40.00 to the card that paid.") in text_of(queued)
+    assert "Its deposit was never paid, so cancelling refunds nothing and closes its payment link." in text_of(unpaid)
+    assert ("Cancelling gives up the 2 still waiting and refunds $40.00 to the card that paid. What was already "
+            "handed over (1 of 3) is not affected.") in text_of(partly)
+    assert "There is nothing left to give up." in text_of(handed)
+    # Nothing was asked of the API but where each one stands.
+    assert [c[:2] for c in api.reservation_calls] == [("GET", f"/reservations/{rid(n)}") for n in (1, 2, 3, 4)]
+    assert [api.reservations[rid(n)]["status"] for n in (1, 2, 3, 4)] == [
+        "queued", "pending_payment", "queued", "granted"]
+    assert api.reservations[rid(1)]["deposit"]["refunded_cents"] == 0
+
+
+@pytest.mark.parametrize("yes", [True, "true", 1])
+async def test_confirm_true_is_what_cancels(api, yes):
+    api.hold(reservation(1, quantity=2, status="queued", position=4, paid_days_ago=2))
+    async with connected(stdio_server(api)) as s:
+        done = await cancel(s, rid(1), confirm=yes)
+    assert not done.is_error, text_of(done)
+    assert [c[:2] for c in api.reservation_calls] == [("POST", f"/reservations/{rid(1)}/cancel")]   # no look first
+    assert api.reservations[rid(1)]["status"] == "cancelled"
+
+
+@pytest.mark.parametrize("no", [False, "false", 0, None, "yes please"])
+async def test_anything_but_true_is_not_a_yes(api, no):
+    api.hold(reservation(1, quantity=2, status="queued", position=4, paid_days_ago=2))
+    async with connected(stdio_server(api)) as s:
+        r = await s.call_tool("phone_cancel_reservation", {"reservation_id": rid(1), "confirm": no})
+    assert r.is_error, text_of(r)
+    assert not any(method == "POST" for method, *_ in api.reservation_calls)
+    assert api.reservations[rid(1)]["status"] == "queued"
+
+
+
+async def test_cancel_refunds_the_deposit_and_says_how_much(api):
+    api.hold(reservation(1, quantity=2, status="queued", position=4, paid_days_ago=2))
+    async with connected(stdio_server(api)) as s:
+        done = await cancel(s, rid(1))
+        again = await cancel(s, rid(1))
+    assert not done.is_error, text_of(done)
+    method, path, headers, body = api.reservation_calls[0]
+    assert (method, path, body) == ("POST", f"/reservations/{rid(1)}/cancel", {})
+    assert headers["authorization"] == "Bearer pck_test"
+    assert text_of(done) == (f"Cancelled reservation {rid(1)}. $40.00 is being refunded to the card that paid. "
+                             "You left the queue and the deposit was refunded in full.")
+    assert text_of(again) == (f"Reservation {rid(1)} was already cancelled: $40.00 was refunded before. "
+                              "Nothing more to refund.")            # twice refunds once
+    assert api.reservations[rid(1)]["deposit"]["refunded_cents"] == 4000
+
+
+async def test_cancel_of_an_unpaid_reservation_has_nothing_to_refund(api):
+    api.hold(reservation(1, quantity=3))
+    async with connected(stdio_server(api)) as s:
+        text = text_of(await cancel(s, rid(1)))
+    assert text == (f"Reservation {rid(1)} is cancelled. Its deposit was never paid, so nothing was charged "
+                    "or refunded.")
+    assert api.reservations[rid(1)]["status"] == "cancelled"
+
+
+async def test_cancel_after_the_grant_is_refused_in_the_apis_words(api):
+    api.hold(reservation(1, status="granted", granted=1, paid_days_ago=20))
+    async with connected(stdio_server(api)) as s:
+        r = await cancel(s, rid(1))
+    assert r.is_error
+    assert f"Not cancelled. {GRANTED_REFUSAL} (already_granted)" in text_of(r)
+    assert api.reservations[rid(1)]["status"] == "granted"
+    assert api.reservations[rid(1)]["deposit"]["refunded_cents"] == 0
+
+
+async def test_a_plan_that_has_ended_says_so_and_cannot_be_cancelled(api):
+    api.hold(reservation(1, quantity=2, status="ended", granted=2, paid_days_ago=90))
+    async with connected(stdio_server(api)) as s:
+        one = text_of(await call(s, "phone_list_reservations", reservation_id=rid(1)))
+        listed = text_of(await call(s, "phone_list_reservations"))
+        r = await cancel(s, rid(1))
+    assert one.splitlines() == [
+        f"Reservation {rid(1)}: 2 x Cloud iPhone, monthly.",
+        "Status: ended. The plan for this phone has ended.",
+        "2 of 2 handed over, the plan has ended for 2.",
+        "Deposit of $40.00 paid 90 days ago, $40.00 went onto a first bill."]
+    assert "ended, 2 of 2 handed over, the plan has ended for 2;" in listed
+    assert r.is_error and f"Not cancelled. {GRANTED_REFUSAL} (already_granted)" in text_of(r)
+
+
+async def test_cancel_with_part_handed_over_refunds_only_what_is_still_waiting(api):
+    api.hold(reservation(1, quantity=3, status="queued", position=1, granted=1, paid_days_ago=9))
+    async with connected(stdio_server(api)) as s:
+        text = text_of(await cancel(s, rid(1)))
+    assert text == (f"Left the queue for the phones still waiting on {rid(1)}. $40.00 is being refunded to the "
+                    "card that paid. 1 phone handed over. You left the queue for the other 2, and that part of "
+                    "the deposit was refunded.")
+
+
+async def test_a_refund_still_owed_is_asked_for_again(api):
+    api.hold(reservation(1, quantity=2, status="cancelling", paid_days_ago=3))
+    async with connected(stdio_server(api)) as s:
+        text = text_of(await cancel(s, rid(1)))
+    assert text.startswith(f"Cancelled reservation {rid(1)}. $40.00 is being refunded")
+
+
+@pytest.mark.parametrize("fail, needles", [
+    ((409, {"error": "Your phone is being handed over right now. Try again in a few minutes.",
+            "code": "grant_in_progress", "retry_after_seconds": 120}, {"Retry-After": "120"}),
+     ["Not cancelled. Your phone is being handed over right now. Try again in a few minutes."]),
+    ((502, {**reservation(1, quantity=2, status="cancelling", paid_days_ago=3), "code": "refund_unconfirmed",
+            "error": "You have left the queue, but the refund could not be started. Try again in a few minutes."},
+      None), ["the refund could not be started", "phone_cancel_reservation again", "never sent twice"]),
+    ((502, {"error": "Stripe could not complete this request; try again shortly.", "code": "payments_unavailable"},
+      None), ["Stripe could not complete this request", "Nothing changed", "phone_cancel_reservation again"]),
+])
+async def test_a_cancel_that_did_not_finish_says_what_to_do(api, fail, needles):
+    api.hold(reservation(1, quantity=2, status="queued", position=1, paid_days_ago=3))
+    api.reservation_fail = fail
+    async with connected(stdio_server(api)) as s:
+        r = await cancel(s, rid(1))
+    assert r.is_error
+    for needle in needles:
+        assert needle in text_of(r), text_of(r)
+    assert 'idempotency_key="' not in text_of(r)                # that is for reserving, not for this
+
+
+# --- whose they are -----------------------------------------------------------------
+
+
+async def test_another_accounts_reservation_is_not_there(api):
+    api.tokens["pck_other"] = dict(api.tokens["pck_test"], uid="u_2")       # a second account
+    api.hold(reservation(1, status="queued", position=1, paid_days_ago=1, uid="u_2"))
+    async with connected(stdio_server(api)) as s:
+        listed = text_of(await call(s, "phone_list_reservations"))
+        read = await call(s, "phone_list_reservations", reservation_id=rid(1))
+        gone = await cancel(s, rid(1))
+    assert listed.startswith("No reservations on this account.")
+    assert read.is_error and gone.is_error
+    assert f"No reservation {rid(1)} on this account" in text_of(gone)
+    assert api.reservations[rid(1)]["status"] == "queued"
+    async with connected(stdio_server(api, token="pck_other")) as s:
+        assert rid(1) in text_of(await call(s, "phone_list_reservations"))
+
+
+async def test_not_signed_in_sends_nothing(api, monkeypatch, tmp_path):
+    monkeypatch.delenv("PHONE_HARNESS_API_KEY", raising=False)
+    monkeypatch.setenv("PHONE_HARNESS_HOME", str(tmp_path))
+    server = build_server(cloud_for=stdio_cloud(local_credentials(), api.url), allow_files=False)
+    async with connected(server) as s:
+        results = [await call(s, "phone_reserve", **RESERVE), await call(s, "phone_list_reservations"),
+                   await call(s, "phone_list_reservations", reservation_id=rid(1)),
+                   await cancel(s, rid(1))]
+    for r in results:
+        assert r.is_error and "Not signed in to Phone Harness Cloud" in text_of(r)
+    assert api.requests == [] and api.reservation_calls == []   # never an anonymous reservation
+
+
+async def test_a_refused_credential_says_so(api):
+    async with connected(stdio_server(api, token="pck_wrong")) as s:
+        results = [await call(s, "phone_reserve", **RESERVE), await call(s, "phone_list_reservations"),
+                   await cancel(s, rid(1))]
+    for r in results:
+        assert r.is_error and "refused the credential" in text_of(r)
+    assert api.reservations == {}
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+def hosted(api):
+    port = free_port()
+    app = build_http_app(api=api.url, mcp_path="/mcp", host="127.0.0.1", allowed_hosts=None, allowed_origins=None,
+                         public_url=None, oauth_issuer=None, stateful=False)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.time() + 10
+    while not server.started and time.time() < deadline:
+        time.sleep(0.05)
+    assert server.started
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(5)
+
+
+async def test_hosted_each_caller_reserves_and_cancels_as_themselves(hosted, api):
+    api.tokens["pck_other"] = dict(api.tokens["pck_test"], uid="u_2")       # a second account
+
+    async def as_caller(bearer, steps):
+        async with (httpx2.AsyncClient(headers={"Authorization": f"Bearer {bearer}"}, timeout=30) as http,
+                    streamable_http_client(f"{hosted}/mcp", http_client=http) as (read, write, *_rest),
+                    ClientSession(read, write) as s):
+            await s.initialize()
+            return [await s.call_tool(tool, args) for tool, args in steps]
+
+    made, mine = await as_caller("pck_test", [("phone_reserve", RESERVE), ("phone_list_reservations", {})])
+    assert not made.is_error and CHECKOUT + "000001" in text_of(made)
+    assert rid(1) in text_of(mine)
+    theirs, refused = await as_caller("pck_other", [("phone_list_reservations", {}),
+                                                    ("phone_cancel_reservation",
+                                                     {"reservation_id": rid(1), "confirm": True})])
+    assert text_of(theirs).startswith("No reservations on this account.")
+    assert refused.is_error and f"No reservation {rid(1)} on this account" in text_of(refused)
+    [gone] = await as_caller("pck_test", [("phone_cancel_reservation",
+                                           {"reservation_id": rid(1), "confirm": True})])
+    assert not gone.is_error and "nothing was charged or refunded" in text_of(gone)
+    assert [c[2]["authorization"] for c in api.reservation_calls] == [
+        "Bearer pck_test", "Bearer pck_test", "Bearer pck_other", "Bearer pck_other", "Bearer pck_test"]
+
+
+# --- the wording helpers ------------------------------------------------------------
+
+
+def test_money_is_whatever_currency_the_api_names():
+    assert reservations._amount(2000) == "$20.00"
+    assert reservations._amount(201600, "usd") == "$2,016.00"
+    assert reservations._amount(2000, "eur") == "20.00 EUR"
+    assert reservations._amount(None) == "?"
+
+
+def test_a_quote_is_only_what_the_api_sent():
+    used = reservation(1, quantity=2, intro=False)              # the intro phone was used before
+    assert reservations._quote(used) == (
+        "Deposit due now: $40.00 (2 x $20.00), refundable in full while the reservation is queued.",
+        ("First month, charged when the phones are handed over: 2 x $80.00 (standard price) = $160.00. "
+         "The deposit comes off it, leaving $120.00."))
+    assert reservations._quote({}) == (
+        None, "First billing period: the price is confirmed before the phones are handed over.")
+
+
+def test_a_checkout_link_has_to_be_stripes():
+    good = "https://checkout.stripe.com/c/pay/cs_live_a1B2#fragment"
+    assert reservations.checkout_url({"checkout_url": good}) == good
+    for bad in (None, "", 7, "https://checkout.stripe.com/c/pay/x\n", "https://CHECKOUT.stripe.com.evil.example/",
+                "https://user@checkout.stripe.com/pay", "javascript:alert(1)", "https://[bad"):
+        assert reservations.checkout_url({"checkout_url": bad}) is None, bad
+
+
+def test_an_expired_link_says_to_reserve_again():
+    row = {**reservation(1), "expires_at": time.time() - 60}
+    assert reservations._pay_lines(row) == [
+        reservations.PAY, row["checkout_url"],
+        "The link has expired. If it no longer opens, reserve again for a new one."]
+    assert reservations._pay_lines({**row, "checkout_url": None}) == [
+        "There is no payment link for it yet. Ask again with its reservation_id in a moment."]
