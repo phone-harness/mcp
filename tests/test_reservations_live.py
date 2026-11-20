@@ -180,6 +180,11 @@ async def call(session, tool, **args):
     return await session.call_tool(tool, args)
 
 
+async def cancel(session, rid, confirm=True):
+    """Cancel through the tool. `confirm` is the user's yes, and the tool needs it."""
+    return await session.call_tool("phone_cancel_reservation", {"reservation_id": rid, "confirm": confirm})
+
+
 async def read(session, rid):
     r = await call(session, "phone_list_reservations", reservation_id=rid, format="json")
     assert not r.is_error, text_of(r)
@@ -232,7 +237,15 @@ async def test_reserve_pay_list_and_cancel_with_the_deposit_refunded(both, local
         assert "Status: queued." in shown and f"Position {queued['position']} in the queue." in shown
         assert "checkout.stripe.com" not in shown
 
-        done = await call(s, "phone_cancel_reservation", reservation_id=rid)
+        # Without confirm nothing is cancelled, and the answer says what it would do.
+        asked = await cancel(s, rid, confirm=False)
+        assert asked.is_error and "Not cancelled: confirm is not true." in text_of(asked)
+        assert f"Cancelling gives up that place and refunds {_amount(total)} to the card that paid." in text_of(asked)
+        unsaid = await s.call_tool("phone_cancel_reservation", {"reservation_id": rid})
+        assert unsaid.is_error and "confirm" in text_of(unsaid)
+        assert (await read(s, rid))["status"] == "queued" and local.refunds(rid) == []
+
+        done = await cancel(s, rid)
         assert not done.is_error, text_of(done)
         assert f"Cancelled reservation {rid}. {_amount(total)} is being refunded to the card that paid." \
             in text_of(done)
@@ -241,7 +254,7 @@ async def test_reserve_pay_list_and_cancel_with_the_deposit_refunded(both, local
         assert after["deposit"]["refunded_cents"] == total
         assert [refund["amount"] for refund in local.refunds(rid)] == [total]
 
-        again = await call(s, "phone_cancel_reservation", reservation_id=rid)      # twice refunds once
+        again = await cancel(s, rid)      # twice refunds once
         assert not again.is_error and "was already cancelled" in text_of(again)
         assert len(local.refunds(rid)) == 1
 
@@ -256,7 +269,7 @@ async def test_a_cancel_after_the_grant_is_refused_and_an_ended_plan_says_so(bot
         assert (after["status"], after["granted"], after["queued"], after["can_cancel"]) == ("granted", 1, 0, False)
         assert after["deposit"]["credited_cents"] == total and after["deposit"]["refundable_cents"] == 0
 
-        refused = await call(s, "phone_cancel_reservation", reservation_id=rid)
+        refused = await cancel(s, rid)
         assert refused.is_error
         assert "Not cancelled." in text_of(refused) and "(already_granted)" in text_of(refused)
         assert (await read(s, rid))["status"] == "granted"
@@ -267,7 +280,7 @@ async def test_a_cancel_after_the_grant_is_refused_and_an_ended_plan_says_so(bot
         assert (ended["status"], ended.get("ended")) == ("ended", 1)
         shown = text_of(await call(s, "phone_list_reservations", reservation_id=rid))
         assert "Status: ended." in shown and "the plan has ended for 1" in shown
-        still = await call(s, "phone_cancel_reservation", reservation_id=rid)
+        still = await cancel(s, rid)
         assert still.is_error and "Not cancelled." in text_of(still)
         assert local.refunds(rid) == []
 
@@ -283,7 +296,7 @@ async def test_part_handed_over_refunds_only_the_phones_still_waiting(client, lo
         assert partly["deposit"]["refundable_cents"] == each * 2
         assert "1 of 3 handed over, 2 still waiting." in text_of(
             await call(s, "phone_list_reservations", reservation_id=rid))
-        done = text_of(await call(s, "phone_cancel_reservation", reservation_id=rid))
+        done = text_of(await cancel(s, rid))
         assert f"Left the queue for the phones still waiting on {rid}. {_amount(each * 2)} is being refunded" in done
         after = await read(s, rid)
         assert (after["status"], after["granted"], after["queued"]) == ("granted", 1, 0)
@@ -309,16 +322,27 @@ async def test_the_same_key_is_the_same_reservation(client, local):
         assert "checkout.stripe.com" not in paid
 
 
-async def test_an_account_with_no_name_on_file_is_asked_for_one(client, local):
-    async with client(local.account(name=None)) as s:
-        bare = await call(s, "phone_reserve", **RESERVE)
-        assert bare.is_error
-        assert "ask the user for their first and last name" in text_of(bare)
-        assert json.loads(text_of(await call(s, "phone_list_reservations", format="json"))) == []
-        made, _text = await reserve(s, first_name="Grace", last_name="Hopper")
+async def test_a_name_is_optional_and_an_override_is_used(client, local):
+    async with client(local.account(name=None)) as nameless, client(local.account()) as named:
+        bare, _text = await reserve(nameless)                   # no name on file and none given: still made
+        assert bare["status"] == "pending_payment"
+        given, _text = await reserve(nameless, first_name="Grace", last_name="Hopper")
+        mine, _text = await reserve(named)                      # this account has "Dana Okafor" on file
+        half, _text = await reserve(named, first_name="Ada")    # one of the two; the other stays the account's
+    for made in (bare, given, mine, half):
         local.pay(made["reservation_id"])
-        row = local.queue_row(made["reservation_id"])                  # what the operator reads
-        assert (row["name"], row["use_case"]) == ("Grace Hopper", USE_CASE)
+    rows = [local.queue_row(made["reservation_id"]) for made in (bare, given, mine, half)]
+    assert [row["name"] for row in rows] == [None, "Grace Hopper", "Dana Okafor", "Ada Okafor"]   # what the operator reads
+    assert {row["use_case"] for row in rows} == {USE_CASE}
+
+
+async def test_quantity_is_one_when_it_is_not_said(client, local):
+    async with client(local.account()) as s:
+        r = await call(s, "phone_reserve", phone_type="iphone", plan="monthly", use_case=USE_CASE)
+        assert not r.is_error, text_of(r)
+        made = await read(s, RID.search(text_of(r)).group(0))
+    assert made["quantity"] == 1 and made["quote"]["deposit"]["phones"] == 1
+    assert made["quote"]["deposit"]["total_cents"] == made["quote"]["deposit"]["per_phone_cents"]
 
 
 async def test_one_account_cannot_read_or_cancel_anothers(both, local):
@@ -328,8 +352,9 @@ async def test_one_account_cannot_read_or_cancel_anothers(both, local):
         local.pay(rid)
         async with both(local.account("Bo Stranger")) as theirs:
             assert text_of(await call(theirs, "phone_list_reservations")).startswith("No reservations")
-            for tool in ("phone_list_reservations", "phone_cancel_reservation"):
-                r = await call(theirs, tool, reservation_id=rid)
+            # Not theirs to read, to look at before a cancel, or to cancel.
+            for r in (await call(theirs, "phone_list_reservations", reservation_id=rid),
+                      await cancel(theirs, rid, confirm=False), await cancel(theirs, rid)):
                 assert r.is_error and f"No reservation {rid} on this account" in text_of(r)
         assert (await read(mine, rid))["status"] == "queued"
         assert local.refunds(rid) == []
@@ -347,7 +372,7 @@ async def test_too_many_unfinished_reservations_are_refused_until_one_is_paid(cl
         assert refused is not None, "twelve unpaid reservations were all accepted"
         assert len(made) >= 2 and "(rate_limited)" in text_of(refused)
         # Giving one up is not a way back in. Paying for one is.
-        gone = await call(s, "phone_cancel_reservation", reservation_id=made[0])
+        gone = await cancel(s, made[0])
         assert not gone.is_error and "nothing was charged or refunded" in text_of(gone)
         assert (await call(s, "phone_reserve", **RESERVE)).is_error
         local.pay(made[1])
@@ -371,7 +396,7 @@ async def test_a_checkout_that_ran_out_is_cancelled_with_nothing_charged(client,
         local.expire(rid)
         gone = await read(s, rid)
         assert (gone["status"], gone["paid_at"], gone["checkout_url"]) == ("cancelled", None, None)
-        r = await call(s, "phone_cancel_reservation", reservation_id=rid)
+        r = await cancel(s, rid)
         assert not r.is_error and "nothing was charged or refunded" in text_of(r)
         assert local.refunds(rid) == []
 
@@ -379,6 +404,6 @@ async def test_a_checkout_that_ran_out_is_cancelled_with_nothing_charged(client,
 async def test_a_key_the_api_refuses(both, local):
     async with both("pck_not_a_real_key") as s:
         for tool, args in (("phone_reserve", RESERVE), ("phone_list_reservations", {}),
-                           ("phone_cancel_reservation", {"reservation_id": "rsv_" + "0" * 24})):
+                           ("phone_cancel_reservation", {"reservation_id": "rsv_" + "0" * 24, "confirm": True})):
             r = await call(s, tool, **args)
             assert r.is_error and "refused the credential" in text_of(r)

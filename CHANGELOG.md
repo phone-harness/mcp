@@ -7,11 +7,14 @@
   `phone_reserve` returns the API's quote (the refundable deposit due now, and
   the plan's first billing period at the intro and standard prices) and a
   Stripe Checkout link. A person opens the link and pays; no tool pays, and
-  nothing is reserved until the deposit is paid. Each call carries an
-  `Idempotency-Key`, so a call repeated with the same key is the same
-  reservation. Cancelling refunds the deposit still held and is refused once
-  every phone has been handed over. Both stdio and hosted mode register them.
-  They need a Phone Harness Cloud API that has the reservation routes.
+  nothing is reserved until the deposit is paid. `quantity` defaults to 1, and
+  a name is optional. Each call carries an `Idempotency-Key`, so a call
+  repeated with the same key is the same reservation.
+  `phone_cancel_reservation` needs `confirm` set to true; without it nothing
+  is cancelled and the answer says what would be given up and refunded. A
+  cancel refunds the deposit still held and is refused once every phone has
+  been handed over. Both stdio and hosted mode register the three. Against an
+  API with no reservation routes yet, each says so and changes nothing.
 
 ## 0.1.0 (2026-10-23)
 

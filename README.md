@@ -220,15 +220,15 @@ There is no tool that opens a URL. A local stdio server also registers `phone_sa
 
 ### Reserving a phone
 
-An account with no cloud iPhone yet, or one that needs more phones, reserves them. These tools take no `device`, and none of them pays: `phone_reserve` hands back a Stripe Checkout link, and a person opens it and pays the refundable deposit. Nothing is reserved until they do.
+An account with no cloud iPhone yet, or one that needs more phones, reserves them with a $20 per phone refundable deposit; the quote `phone_reserve` returns is authoritative. These tools take no `device`, and none of them pays: `phone_reserve` hands back a Stripe Checkout link, and a person opens it and pays the deposit. Nothing is reserved until they do.
 
 | Tool | Does |
 | --- | --- |
-| `phone_reserve` | Ask for phones: `phone_type` (`iphone`, `iphone_esim`, or `android`), `plan` (`monthly` or `annual`), `quantity` (1 to 50), and `use_case`, what the phones are for. Returns the quote (the deposit due now, and the plan's first billing period at the intro and standard prices) and the Checkout link for the deposit. `first_name` and `last_name` are needed when the account has no name on file. `idempotency_key` repeats a call that failed part way without starting a second reservation. |
+| `phone_reserve` | Ask for phones: `phone_type` (`iphone`, `iphone_esim`, or `android`), `plan` (`monthly` or `annual`), `use_case`, what the phones are for, and `quantity` (1 to 50, default 1). Returns the quote (the deposit due now, and the plan's first billing period at the intro and standard prices) and the Checkout link for the deposit. `first_name` and `last_name` put a name on the reservation in place of the account's. `idempotency_key` repeats a call that failed part way without starting a second reservation. |
 | `phone_list_reservations` | The account's reservations, newest first: status, place in the queue, deposit, and when it was paid (`text` or `json`). With `reservation_id`, one in full, with its quote and, while it is unpaid, its Checkout link. |
-| `phone_cancel_reservation` | Give up a place in the queue. The deposit still held is refunded to the card that paid. Refused once every phone has been handed over, because that deposit went onto the first bill. |
+| `phone_cancel_reservation` | Give up a place in the queue. `confirm` must be `true`: without it nothing is cancelled, and the answer says what would be given up and refunded. The deposit still held is refunded to the card that paid. Refused once every phone has been handed over, because that deposit went onto the first bill. |
 
-A reservation is `pending_payment` until the deposit is paid, then `queued` with a position. The plan starts when a phone is handed over, and the deposit comes off its first bill. Amounts come from the API with each quote.
+A reservation is `pending_payment` until the deposit is paid, then `queued` with a position. The plan starts when a phone is handed over, and the deposit comes off its first bill. An account can have five unpaid reservations an hour, and cancelling one does not free a place. Until the API has reservations, each of these tools says so and changes nothing.
 
 ## FAQ
 

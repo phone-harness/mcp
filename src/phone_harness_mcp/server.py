@@ -31,7 +31,7 @@ Start with phone_list_available_devices. If a phone is running, pass its id as `
 
 To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked.
 
-An account that has no cloud iPhone yet, or needs more phones, reserves them. phone_reserve returns a quote and a Stripe Checkout link for a refundable deposit. Give the link to the user: only a person can pay it, no tool here pays, and nothing is reserved until they do. phone_list_reservations shows each reservation's status and place in the queue, and phone_cancel_reservation gives a place up and refunds the deposit still held; cancel only when the user asks."""
+An account that has no cloud iPhone yet, or needs more phones, reserves them with a $20 per phone refundable deposit. phone_reserve returns a quote, which is authoritative, and a Stripe Checkout link. Give the link to the user: only a person can pay it, no tool here pays, and nothing is reserved until they do. phone_list_reservations shows each reservation's status and place in the queue. phone_cancel_reservation gives a place up and refunds the deposit still held; it needs confirm=true, which is the user's yes, so ask first. An account can have five unpaid reservations an hour, and cancelling one does not free a place."""
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 TOUCH = ToolAnnotations(read_only_hint=False, destructive_hint=False)

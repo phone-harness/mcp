@@ -132,7 +132,9 @@ class FakeCloud:
         self.reservation_calls = []   # (method, path, headers with lowercase names, body)
         self.reservation_fail = None  # (status, body, headers): the next reservation request answers this
         self.reservation_drop = 0     # the next N creates are made, and then never answered
-        self.name_on_file = True      # False: the account has no name, so the body has to give one
+        self.account_name = "Ada King"  # the name on file; None for an account that has none
+        self.reserved_names = {}      # reservation_id -> [first, last] as the API would store them
+        self.reservations_live = True  # False: an API from before reservations; every route under it is a 404
         self.checkout = None          # set: every new reservation's checkout_url is this instead
 
     # --- lifecycle --------------------------------------------------------------
@@ -376,6 +378,8 @@ class FakeCloud:
             fail, self.reservation_fail = self.reservation_fail, None
         if fail:
             raise _Reply(*fail)
+        if not self.reservations_live:
+            raise _Reply(404, {"error": f"no route {method} {path}"})
         mine = [r for r in self.reservations.values() if r["uid"] == user["uid"]]
         if len(parts) == 1 and method == "POST":
             return self.reserve(user, body, h.headers.get("Idempotency-Key"))
@@ -397,9 +401,6 @@ class FakeCloud:
             raise _Reply(400, {"error": "Choose a phone: iphone, iphone_esim, android"})
         if type(body.get("quantity")) is not int or not 1 <= body["quantity"] <= 50:
             raise _Reply(400, {"error": "Choose between 1 and 50 phones"})
-        for field, label in (("first_name", "A first name"), ("last_name", "A last name")):
-            if not self.name_on_file and not body.get(field):
-                raise _Reply(400, {"error": f"{label} is required"})
         known = self.reservation_keys.get((user["uid"], key)) if key else None
         if known:
             sent, made = known
@@ -413,6 +414,11 @@ class FakeCloud:
             if self.checkout:
                 row["checkout_url"] = self.checkout
             self.reservations[row["reservation_id"]] = row
+            # A signed-in account need not say who it is: a name in the body is
+            # used, else the one on file, else none at all.
+            first, _, last = (self.account_name or "").partition(" ")
+            self.reserved_names[row["reservation_id"]] = [body.get("first_name") or first or None,
+                                                          body.get("last_name") or last or None]
             if key:
                 self.reservation_keys[(user["uid"], key)] = (body, row["reservation_id"])
             status = 201

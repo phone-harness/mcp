@@ -9,7 +9,9 @@ no place in the queue, so no result says "reserved" before the API says
 held.
 
 Like the driving tools, these forward the caller's own credential and keep no
-state. Every amount in a result is one the API sent: no price is written here.
+state. Every amount in a result is one the API sent. The one figure written
+here is in words a model reads before it reserves, the deposit for each phone,
+and those words say that the quote is what counts.
 """
 from __future__ import annotations
 
@@ -34,6 +36,9 @@ MAX_USE_CASE = 2000          # and for the free text
 TIMEOUT = 75                 # the API talks to Stripe before it answers
 # The only place the API sends anyone to pay.
 CHECKOUT_HOST = "checkout.stripe.com"
+# What the API says of an id that names none of the account's reservations. Any
+# other 404 may be an API with no reservation routes; see Reservations._live.
+NO_SUCH = "No such reservation"
 # Loose on purpose: enough to be safe in a URL path. The API decides what exists.
 RESERVATION_ID = re.compile(r"rsv_[A-Za-z0-9]{1,64}")
 IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9_-]{16,128}")
@@ -41,6 +46,8 @@ LABELS = {"iphone": "Cloud iPhone", "iphone_esim": "Cloud iPhone with eSIM", "an
 TIERS = {"intro": "intro price, once per customer", "standard": "standard price"}
 PAY = ("A person has to open this Stripe Checkout link and pay the deposit. This tool cannot pay, "
        "and you must not pay or enter card details for them:")
+NOT_LIVE = ("This Phone Harness Cloud API does not take reservations yet, so a phone cannot be reserved, listed "
+            "or cancelled through it. Nothing was changed.")
 NOT_CHECKOUT = (f"The payment link the API sent is not a Stripe Checkout page (https://{CHECKOUT_HOST}), so it "
                 "is not given here. Nobody should pay anywhere else.")
 
@@ -221,7 +228,7 @@ def describe(reservation: dict) -> str:
         if status == "queued":            # what the plan will cost once a phone is handed over
             lines.append(_quote(reservation)[1])
     if reservation.get("can_cancel"):
-        lines.append("phone_cancel_reservation gives it up" + (
+        lines.append("phone_cancel_reservation (with confirm=true, once the user agrees) gives it up" + (
             " and refunds the deposit still held." if status == "queued" else "."))
     return "\n".join(lines)
 
@@ -242,8 +249,7 @@ def refusal(e: CloudError, rid: str | None = None, key: str | None = None) -> Ph
                           "reservations.")
     if e.status == 404:
         # No id was named, so it is the route that is missing: an API from before reservations.
-        return PhoneError("This Phone Harness Cloud API does not take reservations yet, so a phone cannot be "
-                          "reserved through it.")
+        return PhoneError(NOT_LIVE)
     if e.code == "idempotency_conflict":
         return PhoneError("That idempotency_key was already used for a different request. Leave it out to start a "
                           "new reservation, or repeat the arguments it was first used with.")
@@ -255,9 +261,8 @@ def refusal(e: CloudError, rid: str | None = None, key: str | None = None) -> Ph
         return PhoneError(f"{said} Call phone_cancel_reservation again to retry the refund; it is never sent twice.")
     if e.code in ("already_granted", "grant_in_progress"):
         return PhoneError(f"Not cancelled. {said} ({e.code})")
-    if e.status == 400 and not e.code and "name" in said.lower():
-        return PhoneError(f"{said}. The account has no name on file: ask the user for their first and last name "
-                          "and call phone_reserve again with first_name and last_name. Do not invent one.")
+    if e.code == "rate_limited":
+        return PhoneError(f"{said} Cancelling one does not free a place; paying for one does. ({e.code})")
     if e.status in (400, 403, 409, 429):
         return PhoneError(said if not e.code or e.code in said else f"{said} ({e.code})")
     return PhoneError(f"Phone Harness Cloud answered {e.status}: {said}{again}")
@@ -312,9 +317,26 @@ class Reservations:
         try:
             return self.cloud.request(method, path, timeout=TIMEOUT)
         except CloudError as e:
+            if e.status == 404 and rid and e.error != NO_SUCH and not self._live():
+                raise PhoneError(NOT_LIVE) from None
             raise refusal(e, rid=rid) from None
         except (NotSignedIn, Unreachable) as e:
             raise PhoneError(str(e)) from None
+
+    def _live(self) -> bool:
+        """Whether this API has reservation routes at all.
+
+        A 404 for one reservation does not say. An API from before reservations
+        answers 404 for every path under /reservations, and "no reservation of
+        yours has that id" would be the wrong thing to tell someone then. The
+        list is the one route with no id in it, so it is asked once."""
+        try:
+            self.cloud.request("GET", "/reservations", timeout=TIMEOUT)
+        except CloudError as e:
+            return e.status != 404
+        except (NotSignedIn, Unreachable):
+            pass            # cannot tell; the first answer stands
+        return True
 
 
 def _id(reservation_id: str) -> str:
@@ -323,6 +345,27 @@ def _id(reservation_id: str) -> str:
         raise PhoneError("reservation_id is an id like rsv_0123456789abcdef01234567; phone_list_reservations "
                          "shows the account's.")
     return rid
+
+
+def _would_cancel(reservation: dict) -> str:
+    """What cancelling this reservation would give up and give back, said before it is done."""
+    deposit = reservation.get("deposit") or {}
+    back = _amount(deposit.get("refundable_cents") or 0, deposit.get("currency") or "usd")
+    status = reservation.get("status")
+    lead = f"Reservation {reservation.get('reservation_id')} is {status}: {_phones(reservation)}"
+    if status == "pending_payment":
+        return f"{lead}. Its deposit was never paid, so cancelling refunds nothing and closes its payment link."
+    if status == "cancelling":
+        return f"{lead}. It was cancelled before and the refund is not confirmed; cancelling again asks for it again."
+    if not reservation.get("can_cancel"):
+        detail = f" {reservation['detail']}" if reservation.get("detail") else ""
+        return f"{lead}.{detail} There is nothing left to give up."
+    place = f", position {reservation['position']} in the queue" if reservation.get("position") is not None else ""
+    if reservation.get("granted"):
+        return (f"{lead}{place}. Cancelling gives up the {reservation.get('queued') or 0} still waiting and refunds "
+                f"{back} to the card that paid. What was already handed over ({reservation['granted']} of "
+                f"{reservation.get('quantity')}) is not affected.")
+    return f"{lead}{place}. Cancelling gives up that place and refunds {back} to the card that paid."
 
 
 def _cancelled(done: dict, rid: str) -> str:
@@ -360,12 +403,12 @@ def register(server, cloud_for) -> None:
     async def reserve(ctx: Context,
                       phone_type: Literal["iphone", "iphone_esim", "android"],
                       plan: Literal["monthly", "annual"],
-                      quantity: int,
                       use_case: str,
+                      quantity: int = 1,
                       first_name: str | None = None,
                       last_name: str | None = None,
                       idempotency_key: str | None = None) -> str:
-        """Ask for cloud phones the account does not have yet, and get the quote and a Stripe Checkout link for the refundable deposit. This tool never pays: a person must open the link and pay the deposit, and until they do nothing is reserved and no place in the queue is held. `phone_type` is iphone, iphone_esim (with a real number) or android; `plan` is monthly or annual; `quantity` is 1 to 50; `use_case` is what the user wants the phones for, in their words. Ask the user for these rather than guessing. `first_name` and `last_name` are the person reserving, needed when the account has no name on file (the error says so). The result names an `idempotency_key`; pass it back only to repeat a call that failed part way."""
+        """Ask for cloud phones the account does not have yet, and get the quote and a Stripe Checkout link for the deposit. Reserving takes a $20 per phone refundable deposit; the quote in the result is authoritative. This tool never pays: a person must open the link and pay the deposit, and until they do nothing is reserved and no place in the queue is held. `phone_type` is iphone, iphone_esim (with a real number) or android; `plan` is monthly or annual; `quantity` is 1 to 50 (default 1); `use_case` is what the user wants the phones for, in their words. Ask the user for these rather than guessing. `first_name` and `last_name` put a name on the reservation in place of the account's; pass them only when the user gives one. An account can have five unpaid reservations an hour, and cancelling one does not free a place, so reserve when the user means it and not to look at a price. The result names an `idempotency_key`; pass it back only to repeat a call that failed part way."""
         if isinstance(quantity, bool) or not 1 <= quantity <= MAX_QUANTITY:
             raise PhoneError(f"quantity must be between 1 and {MAX_QUANTITY}.")
         use_case = (use_case or "").strip()
@@ -391,7 +434,7 @@ def register(server, cloud_for) -> None:
         started = (f"Started reservation {rid}: {_phones(made)}. It holds no place in the queue yet: nothing is "
                    "reserved until the deposit is paid.")
         after = ("Once the deposit is paid, phone_list_reservations shows it as queued with its place. "
-                 "phone_cancel_reservation gives the place up and refunds the deposit.")
+                 "phone_cancel_reservation gives the place up and refunds the deposit, when the user asks.")
         return "\n".join([started, "", *_pay_lines(made), "", *_quote_lines(made), "", after,
                           f'(idempotency_key="{key}")'])
 
@@ -414,8 +457,14 @@ def register(server, cloud_for) -> None:
 
     @server.tool(name="phone_cancel_reservation", title="Cancel a reservation",
                  annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True))
-    async def cancel_reservation(ctx: Context, reservation_id: str) -> str:
-        """Cancel a phone reservation: give up its place in the queue and refund the deposit still held to the card that paid. Call it only when the user has asked to cancel. A queued reservation is refunded in full; an unpaid one is closed with nothing to refund. Once every phone has been handed over it is refused, because that deposit went onto the first bill."""
+    async def cancel_reservation(ctx: Context, reservation_id: str, confirm: bool) -> str:
+        """Cancel a phone reservation: give up its place in the queue and refund the deposit still held to the card that paid. Call it only when the user has asked to cancel. `confirm` must be true and stands for the user's yes: with confirm false nothing is cancelled, and the answer says what would be given up and refunded so you can ask them. A queued reservation is refunded in full; an unpaid one is closed with nothing to refund. Once every phone has been handed over it is refused, because that deposit went onto the first bill."""
         rid = _id(reservation_id)
-        done = await _thread(reservations(ctx).cancel, rid)
+        r = reservations(ctx)
+        if confirm is not True:
+            # Nothing is asked of the API but where the reservation stands.
+            found = await _thread(r.one, rid)
+            raise PhoneError(f"Not cancelled: confirm is not true. {_would_cancel(found)} Ask the user, and call "
+                             "phone_cancel_reservation again with confirm=true only if they say yes.")
+        done = await _thread(r.cancel, rid)
         return _cancelled(done, rid)
