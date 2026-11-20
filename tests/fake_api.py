@@ -5,6 +5,11 @@ lifecycle, and `POST /sessions/{sid}/op` with its 400/404/409 contract. Every
 op lands in `.ops`, every request in `.requests`, so a test can assert what the
 server actually sent. The same process also plays the OAuth token endpoint, so
 the CLI-login refresh path can be tested without Clerk.
+
+It also plays the reservation routes (docs/api.md, "Reservations"): a phone is
+asked for, the answer is a quote and a Stripe Checkout link, and nothing here
+ever charges anyone. `.reservation_calls` keeps each of those requests with its
+headers and body.
 """
 from __future__ import annotations
 
@@ -29,6 +34,72 @@ TEXT = [
     {"text": "Hello Cloud", "confidence": 1.0, "source": "tree", "x": 195.0, "y": 200.0, "w": 200.0, "h": 30.0},
     {"text": "Continue", "confidence": 1.0, "source": "tree", "x": 195.0, "y": 500.0, "w": 160.0, "h": 44.0},
 ]
+
+
+CHECKOUT = "https://checkout.stripe.com/c/pay/cs_test_"
+DEPOSIT = 2000
+# (standard, intro) cents for one phone for one billing period. A cloud
+# Android can be reserved before it has a price.
+PRICES = {("iphone", "monthly"): (8000, 5000), ("iphone", "annual"): (76800, 48000),
+          ("iphone_esim", "monthly"): (10000, 6500), ("iphone_esim", "annual"): (96000, 62400),
+          ("android", "monthly"): (None, None), ("android", "annual"): (None, None)}
+DETAIL = {
+    "pending_payment": "This reservation is not finished. Pay the deposit to hold a place.",
+    "queued": "You are in the queue. Cancel any time and the deposit comes back in full.",
+    "cancelling": "You have left the queue. Your deposit is on its way back to your card.",
+    "granted": "Your phone is yours. The deposit went towards your first bill.",
+    "ended": "The plan for this phone has ended.",
+    "cancelled": "You left the queue and the deposit was refunded in full.",
+}
+NEVER_PAID = "This reservation was never paid for, so nothing was charged and no place is held."
+GRANTED_REFUSAL = ("Your phone has been handed over, and its deposit went towards your first bill. "
+                   "Manage the plan from your account.")
+
+
+def rid(n):
+    return "rsv_" + f"{n:024x}"
+
+
+def reservation(n, phone_type="iphone", plan="monthly", quantity=1, status="pending_payment", *,
+                position=None, granted=0, paid_days_ago=None, intro=True, uid="u_1"):
+    """One reservation as the API shows it, in whichever state `status` names. `uid` is the
+    fake's own note of whose it is and is never sent."""
+    standard, intro_cents = PRICES[(phone_type, plan)]
+    lines = []
+    if standard is not None:
+        rest = quantity
+        if intro and intro_cents is not None:
+            lines.append({"tier": "intro", "quantity": 1, "unit_cents": intro_cents})
+            rest -= 1
+        if rest:
+            lines.append({"tier": "standard", "quantity": rest, "unit_cents": standard})
+    first = sum(line["quantity"] * line["unit_cents"] for line in lines) if lines else None
+    total = DEPOSIT * quantity
+    unpaid = status == "pending_payment" or (status == "cancelled" and paid_days_ago is None)
+    credited = 0 if unpaid else DEPOSIT * granted
+    held = total - credited if status in ("queued", "cancelling") else 0
+    refunded = total - credited if status in ("cancelled", "granted", "ended") and not unpaid else 0
+    pending = status == "pending_payment"
+    return {
+        "uid": uid, "reservation_id": rid(n), "status": status, "phone_type": phone_type, "plan": plan,
+        "quantity": quantity, "created_at": time.time() - 86400 * (paid_days_ago or 0) - 60,
+        "paid_at": None if unpaid else time.time() - 86400 * (paid_days_ago or 0),
+        "position": position if status == "queued" else None,
+        "queued": quantity - granted if status == "queued" else 0,
+        "granted": 0 if unpaid else granted,
+        "ended": granted if status == "ended" else 0,       # phones whose plan has since ended
+        "deposit": {"paid_cents": 0 if unpaid else total, "refundable_cents": held,
+                    "credited_cents": credited, "refunded_cents": refunded, "currency": "usd"},
+        "can_cancel": status in ("pending_payment", "queued"),
+        "checkout_url": CHECKOUT + f"{n:06d}" if pending else None,
+        "expires_at": time.time() + 86400 if pending else None,
+        "quote": {"currency": "usd", "interval": "month" if plan == "monthly" else "year",
+                  "deposit": {"per_phone_cents": DEPOSIT, "phones": quantity, "total_cents": total,
+                              "refundable": True},
+                  "priced": standard is not None, "lines": lines, "first_period_cents": first,
+                  "due_at_handover_cents": first - total if first is not None else None},
+        "detail": NEVER_PAID if status == "cancelled" and unpaid else DETAIL[status],
+    }
 
 
 def solid_png(w, h, rgb=(240, 240, 245)):
@@ -56,6 +127,13 @@ class FakeCloud:
         self._server = None
         self._thread = None
         self.me_patch = None          # merged over GET /me; None drops a key
+        self.reservations = {}        # reservation_id -> reservation, in the order made
+        self.reservation_keys = {}    # (uid, Idempotency-Key) -> (body, reservation_id)
+        self.reservation_calls = []   # (method, path, headers with lowercase names, body)
+        self.reservation_fail = None  # (status, body, headers): the next reservation request answers this
+        self.reservation_drop = 0     # the next N creates are made, and then never answered
+        self.name_on_file = True      # False: the account has no name, so the body has to give one
+        self.checkout = None          # set: every new reservation's checkout_url is this instead
 
     # --- lifecycle --------------------------------------------------------------
 
@@ -136,6 +214,8 @@ class FakeCloud:
             self._send(h, status, body, headers)
         except _Reply as r:
             self._send(h, r.status, r.body, r.headers)
+        except _Dropped:
+            h.close_connection = True       # the request was handled; its answer never arrives
 
     def _token_endpoint(self, h):
         n = int(h.headers.get("Content-Length") or 0)
@@ -160,6 +240,8 @@ class FakeCloud:
                          if s["uid"] == user["uid"] and s["state"] != "closed"], None
         if path == "/sessions" and method == "POST":
             return self.create(user, self._body(h))
+        if parts[0] == "reservations":
+            return self.reservation_route(method, path, parts, user, h)
         if len(parts) >= 2 and parts[0] == "sessions":
             s = self.sessions.get(parts[1])
             if not s or s["uid"] != user["uid"] or s["state"] == "closed":
@@ -275,6 +357,93 @@ class FakeCloud:
         return None
 
 
+    # --- reservations -----------------------------------------------------------
+
+    @staticmethod
+    def shown(row):
+        return {k: v for k, v in row.items() if k != "uid"}
+
+    def hold(self, *rows):
+        """Put reservations on an account, oldest first."""
+        for row in rows:
+            self.reservations[row["reservation_id"]] = row
+        return rows[0] if len(rows) == 1 else rows
+
+    def reservation_route(self, method, path, parts, user, h):
+        body = self._body(h) if method == "POST" else None
+        with self.lock:
+            self.reservation_calls.append((method, path, {k.lower(): v for k, v in h.headers.items()}, body))
+            fail, self.reservation_fail = self.reservation_fail, None
+        if fail:
+            raise _Reply(*fail)
+        mine = [r for r in self.reservations.values() if r["uid"] == user["uid"]]
+        if len(parts) == 1 and method == "POST":
+            return self.reserve(user, body, h.headers.get("Idempotency-Key"))
+        if len(parts) == 1 and method == "GET":
+            return 200, {"reservations": [self.shown(r) for r in reversed(mine)]}, None
+        row = next((r for r in mine if r["reservation_id"] == parts[1]), None) if len(parts) > 1 else None
+        if row is None:
+            raise _Reply(404, {"error": "No such reservation"})
+        if len(parts) == 2 and method == "GET":
+            return 200, self.shown(row), None
+        if len(parts) == 3 and parts[2] == "cancel" and method == "POST":
+            return self.cancel_reservation(row)
+        raise _Reply(404, {"error": "not found"})
+
+    def reserve(self, user, body, key):
+        if set(body) - {"first_name", "last_name", "email", "use_case", "phone_type", "plan", "quantity"}:
+            raise _Reply(400, {"error": "Unknown field"})
+        if (body.get("phone_type"), body.get("plan")) not in PRICES:
+            raise _Reply(400, {"error": "Choose a phone: iphone, iphone_esim, android"})
+        if type(body.get("quantity")) is not int or not 1 <= body["quantity"] <= 50:
+            raise _Reply(400, {"error": "Choose between 1 and 50 phones"})
+        for field, label in (("first_name", "A first name"), ("last_name", "A last name")):
+            if not self.name_on_file and not body.get(field):
+                raise _Reply(400, {"error": f"{label} is required"})
+        known = self.reservation_keys.get((user["uid"], key)) if key else None
+        if known:
+            sent, made = known
+            if sent != body:
+                raise _Reply(409, {"error": "Idempotency-Key was already used with a different request",
+                                   "code": "idempotency_conflict"})
+            status, row = 200, self.reservations[made]
+        else:
+            row = reservation(len(self.reservations) + 1, body["phone_type"], body["plan"], body["quantity"],
+                              uid=user["uid"])
+            if self.checkout:
+                row["checkout_url"] = self.checkout
+            self.reservations[row["reservation_id"]] = row
+            if key:
+                self.reservation_keys[(user["uid"], key)] = (body, row["reservation_id"])
+            status = 201
+        if self.reservation_drop:
+            self.reservation_drop -= 1
+            raise _Dropped()
+        return status, {**self.shown(row), "status_url": "https://phone-harness.com/reservation?id="
+                                                          + row["reservation_id"]}, None
+
+    def cancel_reservation(self, row):
+        status, deposit = row["status"], row["deposit"]
+        if status in ("granted", "ended"):
+            raise _Reply(409, {"error": GRANTED_REFUSAL, "code": "already_granted"})
+        refunded = 0
+        if status in ("queued", "cancelling"):
+            refunded = deposit["refundable_cents"]
+            deposit.update(refundable_cents=0, refunded_cents=deposit["refunded_cents"] + refunded)
+            handed = row["granted"]
+            row.update(status="granted" if handed else "cancelled", position=None, queued=0, can_cancel=False,
+                       detail=(f"{handed} phone handed over. You left the queue for the other "
+                               f"{row['quantity'] - handed}, and that part of the deposit was refunded."
+                               if handed else DETAIL["cancelled"]))
+        elif status == "pending_payment":
+            row.update(status="cancelled", can_cancel=False, checkout_url=None, expires_at=None, detail=NEVER_PAID)
+        return 200, {**self.shown(row), "refunded_cents": refunded}, None
+
+
 class _Reply(Exception):
     def __init__(self, status, body, headers=None):
         self.status, self.body, self.headers = status, body, headers
+
+
+class _Dropped(Exception):
+    """Handled, and then the connection closes with no answer."""

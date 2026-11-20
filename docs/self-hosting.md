@@ -35,6 +35,8 @@ Over stdio the server also registers `phone_save_screenshot`. It writes a PNG wh
 
 There is no tool that opens a URL, installs an app, reads the clipboard, or records the screen.
 
+`phone_reserve`, `phone_list_reservations` and `phone_cancel_reservation` are registered in both modes. They forward the same credential as the phone tools and call the API's reservation routes. None of them pays: `phone_reserve` returns a Stripe Checkout link for a person to open.
+
 [<img src="https://img.shields.io/badge/VS_Code-Install-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white" alt="Install in VS Code">](https://vscode.dev/redirect/mcp/install?name=phone-harness&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22phone-harness-mcp%22%5D%7D)
 [<img src="https://img.shields.io/badge/VS_Code_Insiders-Install-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white" alt="Install in VS Code Insiders">](https://insiders.vscode.dev/redirect/mcp/install?name=phone-harness&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22phone-harness-mcp%22%5D%7D&quality=insiders)
 [<img src="https://img.shields.io/badge/Cursor-Install-000000?style=flat-square&logo=cursor" alt="Install in Cursor">](cursor://anysphere.cursor-deeplink/mcp/install?name=phone-harness&config=eyJjb21tYW5kIjoidXZ4IiwiYXJncyI6WyJwaG9uZS1oYXJuZXNzLW1jcCJdfQ==)
@@ -241,6 +243,11 @@ docker run --rm -p 8000:8000 phone-harness-mcp --port 8000 --host 0.0.0.0 --allo
   [phone-harness.com/pricing](https://phone-harness.com/pricing) for current
   rates. The `phone_start_device` description says so; turn on your client's
   tool-approval setting if you want to confirm a start.
+- Reserving a phone charges nothing through this server. `phone_reserve`
+  returns a Stripe Checkout link and a person pays the refundable deposit
+  there. `phone_cancel_reservation` gives up a place in the queue and has the
+  API refund the deposit still held; it is marked destructive, so a client
+  that confirms destructive tools will ask first.
 
 Report vulnerabilities per [SECURITY.md](../SECURITY.md).
 
@@ -252,6 +259,12 @@ uv run pytest            # a fake Phone Harness Cloud API; no account needed
 uv run phone-harness-mcp --help
 ```
 
-Layout: `src/phone_harness_mcp/{cli,server,phone,cloud,screenshots,auth,vercel}.py`.
+Layout: `src/phone_harness_mcp/{cli,server,phone,reservations,cloud,screenshots,auth,vercel}.py`.
 `cloud.py` is the HTTP client, `phone.py` turns API answers into sentences for
-the model, `server.py` is the tool set, `auth.py` is hosted-mode bearer handling.
+the model, `server.py` is the tool set, `reservations.py` is the three tools
+that reserve a phone, `auth.py` is hosted-mode bearer handling.
+
+`tests/test_reservations_live.py` runs the reservation tools against a real
+phone-cloud on this machine (Stripe faked). It is skipped unless
+`PHONE_CLOUD_LOCAL_STATE` names that server's state file; the file's first
+lines say how to start one.

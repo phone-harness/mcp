@@ -66,3 +66,14 @@ def test_a_refused_key_is_a_401_not_a_loop(api):
         cloud.request("GET", "/me")
     assert e.value.status == 401
     assert len([p for p in api.requests if p[1] == "/me"]) == 1
+
+
+def test_an_extra_header_is_sent_and_never_replaces_the_bearer(api):
+    cloud = Cloud(StaticToken("pck_test"), api.url)
+    cloud.request("GET", "/reservations", headers={"Idempotency-Key": "a-key-of-sixteen-chars",
+                                                   "Authorization": "Bearer pck_somebody_else"})
+    method, path, headers, _body = api.reservation_calls[0]
+    assert (method, path) == ("GET", "/reservations")
+    assert headers["idempotency-key"] == "a-key-of-sixteen-chars"
+    assert headers["authorization"] == "Bearer pck_test"
+    assert [bearer for _m, _p, bearer in api.requests] == ["pck_test"]

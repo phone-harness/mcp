@@ -14,6 +14,8 @@ EXPECTED_TOOLS = {
     "phone_list_elements_on_screen", "phone_click_on_screen_at_coordinates",
     "phone_long_press_on_screen_at_coordinates", "phone_swipe_on_screen", "phone_type_keys",
     "phone_press_button", "phone_list_apps", "phone_launch_app", "phone_get_foreground_app",
+    # asking for phones the account does not have yet; none of the three pays
+    "phone_reserve", "phone_list_reservations", "phone_cancel_reservation",
 }
 
 

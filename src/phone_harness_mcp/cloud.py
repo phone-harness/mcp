@@ -181,10 +181,12 @@ class Cloud:
         self.url = (url or api_url()).rstrip("/")
         self.timeout = timeout
 
-    def request(self, method: str, path: str, body=None, timeout: float | None = None) -> dict:
+    def request(self, method: str, path: str, body=None, timeout: float | None = None,
+                headers: dict | None = None) -> dict:
+        """`headers` adds to a request (an `Idempotency-Key`); it never replaces the bearer."""
         token = self.credentials.token()
         try:
-            return self._send(method, path, body, token, timeout)
+            return self._send(method, path, body, token, timeout, headers)
         except CloudError as e:
             # A token can be refused before its stated expiry (clock skew, a
             # revoked grant): one refresh, one retry, then it is a 401.
@@ -193,10 +195,11 @@ class Cloud:
             fresh = self.credentials.refreshed()
             if not fresh:
                 raise
-            return self._send(method, path, body, fresh, timeout)
+            return self._send(method, path, body, fresh, timeout, headers)
 
-    def _send(self, method, path, body, token, timeout):
-        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": USER_AGENT}
+    def _send(self, method, path, body, token, timeout, extra=None):
+        headers = {**(extra or {}), "Authorization": f"Bearer {token}", "Accept": "application/json",
+                   "User-Agent": USER_AGENT}
         data = None
         if body is not None:
             headers["Content-Type"] = "application/json"

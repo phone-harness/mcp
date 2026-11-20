@@ -23,12 +23,15 @@ from . import __version__, screenshots
 from .auth import bearer_of
 from .cloud import Cloud, StaticToken
 from .phone import DEFAULT_MINUTES, READY_WAIT, PhoneError, Phones, Unsupported, describe, minutes_left
+from .reservations import register as register_reservations
 
 INSTRUCTIONS = """Drive a Phone Harness Cloud phone: a real iPhone or an Android emulator, reached over HTTPS.
 
 Start with phone_list_available_devices. If a phone is running, pass its id as `device` to every other tool. If none is, phone_start_device starts one. Cloud Android is pay as you go at 5 cents per minute; a cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM, or 20% off billed annually at $64/mo, $80/mo with eSIM) and is not billed by the minute. Call phone_stop_device when the task is done.
 
-To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked."""
+To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked.
+
+An account that has no cloud iPhone yet, or needs more phones, reserves them. phone_reserve returns a quote and a Stripe Checkout link for a refundable deposit. Give the link to the user: only a person can pay it, no tool here pays, and nothing is reserved until they do. phone_list_reservations shows each reservation's status and place in the queue, and phone_cancel_reservation gives a place up and refunds the deposit still held; cancel only when the user asks."""
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 TOUCH = ToolAnnotations(read_only_hint=False, destructive_hint=False)
@@ -360,5 +363,9 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
                 raise PhoneError(NO_FOREGROUND) from None
             raise
         return f"Foreground app: {current}" if current else "No app is in the foreground; the phone is on its home screen."
+
+    # --- reserving phones the account does not have yet -------------------------
+
+    register_reservations(server, cloud_for)
 
     return server

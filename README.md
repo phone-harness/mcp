@@ -195,7 +195,7 @@ Any other client that can add a remote streamable HTTP server uses the URL above
 
 ## Tools
 
-The hosted server registers these tools. Every tool except the first two takes `device`, an id from `phone_list_available_devices`.
+The hosted server registers these tools. Every tool in the first table except its first two takes `device`, an id from `phone_list_available_devices`.
 
 Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you go. A Cloud iPhone is a flat monthly subscription, not billed by the minute: $80/mo, or $100/mo with an eSIM, with 20% off billed annually ($64/mo, or $80/mo with an eSIM). `minutes` on `phone_start_device` is how long the session runs (default 30), not a billing unit. See [phone-harness.com/pricing](https://phone-harness.com/pricing) for current rates.
 
@@ -217,6 +217,18 @@ Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you
 | `phone_get_foreground_app` | Which app is in front, when the phone reports it. |
 
 There is no tool that opens a URL. A local stdio server also registers `phone_save_screenshot` (write a PNG or JPEG on that machine). Tool names follow [mobile-mcp](https://github.com/mobile-next/mobile-mcp).
+
+### Reserving a phone
+
+An account with no cloud iPhone yet, or one that needs more phones, reserves them. These tools take no `device`, and none of them pays: `phone_reserve` hands back a Stripe Checkout link, and a person opens it and pays the refundable deposit. Nothing is reserved until they do.
+
+| Tool | Does |
+| --- | --- |
+| `phone_reserve` | Ask for phones: `phone_type` (`iphone`, `iphone_esim`, or `android`), `plan` (`monthly` or `annual`), `quantity` (1 to 50), and `use_case`, what the phones are for. Returns the quote (the deposit due now, and the plan's first billing period at the intro and standard prices) and the Checkout link for the deposit. `first_name` and `last_name` are needed when the account has no name on file. `idempotency_key` repeats a call that failed part way without starting a second reservation. |
+| `phone_list_reservations` | The account's reservations, newest first: status, place in the queue, deposit, and when it was paid (`text` or `json`). With `reservation_id`, one in full, with its quote and, while it is unpaid, its Checkout link. |
+| `phone_cancel_reservation` | Give up a place in the queue. The deposit still held is refunded to the card that paid. Refused once every phone has been handed over, because that deposit went onto the first bill. |
+
+A reservation is `pending_payment` until the deposit is paid, then `queued` with a position. The plan starts when a phone is handed over, and the deposit comes off its first bill. Amounts come from the API with each quote.
 
 ## FAQ
 
