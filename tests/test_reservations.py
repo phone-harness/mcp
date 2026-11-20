@@ -32,6 +32,9 @@ README = (ROOT / "README.md").read_text()
 SELF_HOSTING = (ROOT / "docs" / "self-hosting.md").read_text()
 CHANGELOG = (ROOT / "CHANGELOG.md").read_text()
 DEPOSIT = "$20"            # stated in words only; every amount in a result is the API's
+# Which phones are reserved, in the words every copy uses. Its figure is the Android plan's.
+IPHONES_ONLY = ("Reservations are for iPhones only (with or without eSIM). "
+                "Cloud Android emulators are on the $20 plan and are not reserved.")
 USE_CASE = "Testing our listings app on real iPhones."
 RESERVE = {"phone_type": "iphone", "plan": "monthly", "quantity": 2, "use_case": USE_CASE}
 TOOLS = ("phone_reserve", "phone_list_reservations", "phone_cancel_reservation")
@@ -62,7 +65,9 @@ async def test_three_tools_that_say_they_never_pay(api):
     schema = reserve.input_schema
     assert schema["required"] == ["phone_type", "plan", "use_case"]
     assert schema["properties"]["quantity"]["default"] == 1     # one phone unless it is told more, like the CLI
-    assert schema["properties"]["phone_type"]["enum"] == ["iphone", "iphone_esim", "android"]
+    assert schema["properties"]["phone_type"]["enum"] == ["iphone", "iphone_esim"]
+    for tool in (reserve, listing, cancel_tool):
+        assert "android" not in json.dumps(tool.input_schema).lower(), tool.name    # nowhere a client can pick it
     assert schema["properties"]["plan"]["enum"] == ["monthly", "annual"]
     assert {"first_name", "last_name", "idempotency_key"} <= set(schema["properties"])
     assert not {"first_name", "last_name"} & set(schema["required"])            # a name is an override, never needed
@@ -89,14 +94,20 @@ async def test_the_deposit_is_stated_once_in_each_place_and_the_quote_is_what_co
               "README.md": README.split("### Reserving a phone", 1)[1].split("\n## ", 1)[0],
               "docs/self-hosting.md": "\n".join(line for line in SELF_HOSTING.splitlines()
                                                  if re.search("reserv|deposit", line, re.IGNORECASE))}
+    assert reservations.IPHONES_ONLY == IPHONES_ONLY
     for where, text in stated.items():
         text = " ".join(text.split())
+        assert text.count(IPHONES_ONLY) == 1, where                      # only iPhones, in the same words
+        text = text.replace(IPHONES_ONLY, "")                            # that figure is the Android plan's
         assert figure.findall(text) == [DEPOSIT], where                  # said once, so it changes in one place
+        assert not re.search(r"(?i)iphone_esim`?(?: \([^)]*\))?,? (?:or|\|) `?android", text), where
         assert f"{DEPOSIT} per phone refundable deposit" in text, where
         assert re.search(r"quote\b[^.]*\bauthoritative", text), where
         assert "five unpaid reservations an hour" in text.lower(), where
         assert "cancelling one does not free a place" in text.lower(), where
-    assert "$" not in CHANGELOG.split("## Unreleased", 1)[1].split("\n## ", 1)[0]   # a changelog names no price
+    unreleased = " ".join(CHANGELOG.split("## Unreleased", 1)[1].split("\n## ", 1)[0].split())
+    assert "$" not in unreleased                               # a changelog names no price
+    assert "Reservations are for iPhones only (with or without eSIM)" in unreleased
     # What a model, or a person reading the README, has to know before reserving or cancelling for someone.
     said = {where: " ".join(text.split()) for where, text in stated.items()}
     for where in ("the tool", "the instructions", "README.md"):
@@ -144,18 +155,23 @@ async def test_the_result_is_the_link_the_quote_and_that_a_person_must_pay(api):
     assert "You are in the queue" not in text and "position" not in text.lower()
 
 
-async def test_an_annual_plan_and_a_phone_with_no_price_yet(api):
+async def test_an_annual_plan(api):
     async with connected(stdio_server(api)) as s:
         annual = text_of(await call(s, "phone_reserve", phone_type="iphone_esim", plan="annual", quantity=2,
                                     use_case=USE_CASE))
-        android = text_of(await call(s, "phone_reserve", phone_type="android", plan="monthly", quantity=1,
-                                     use_case=USE_CASE))
     assert "2 x Cloud iPhone with eSIM, annual" in annual
     assert ("First year, charged when the phones are handed over: 1 x $624.00 (intro price, once per customer) "
             "+ 1 x $960.00 (standard price) = $1,584.00. The deposit comes off it, leaving $1,544.00.") in annual
-    assert "- Deposit due now: $20.00 (1 x $20.00), refundable in full while the reservation is queued." in android
-    assert "- First month: the price is confirmed before the phones are handed over." in android
     assert api.reservation_calls[0][3]["phone_type"] == "iphone_esim"
+
+
+@pytest.mark.parametrize("asked", ["android", "Android", "android_emulator"])
+async def test_an_android_is_not_reserved_and_nothing_is_sent(api, asked):
+    async with connected(stdio_server(api)) as s:
+        r = await call(s, "phone_reserve", **{**RESERVE, "phone_type": asked})
+    assert r.is_error
+    assert text_of(r) == f"Error executing tool phone_reserve: {IPHONES_ONLY}"
+    assert api.reservation_calls == [] and api.reservations == {}
 
 
 @pytest.mark.parametrize("change, needle", [
@@ -166,7 +182,8 @@ async def test_an_annual_plan_and_a_phone_with_no_price_yet(api):
     ({"use_case": ""}, "use_case is required"),
     ({"use_case": "   "}, "use_case is required"),
     ({"use_case": "x" * 2001}, "the most is 2000"),
-    ({"phone_type": "ipad"}, "'iphone', 'iphone_esim' or 'android'"),
+    ({"phone_type": "ipad"}, "phone_type must be iphone or iphone_esim, not 'ipad'"),
+    ({"phone_type": 7}, "phone_type"),
     ({"plan": "weekly"}, "'monthly' or 'annual'"),
     ({"idempotency_key": "short"}, "16 to 128"),
     ({"idempotency_key": "has spaces in the key!"}, "16 to 128"),
@@ -261,6 +278,10 @@ async def test_an_api_that_cannot_be_reached_says_how_to_continue(api):
     ((403, {"error": "this sign-in can drive phones, not manage the account; use the dashboard or an API key",
             "code": "scope_limited"}, None), ["use the dashboard or an API key"]),
     ((400, {"error": "Choose between 1 and 50 phones"}, None), ["Choose between 1 and 50 phones"]),
+    # What the API says of a phone it does not reserve, should these tools ever offer one it has dropped.
+    ((400, {"error": "Cloud Android cannot be reserved. Choose a phone: iphone, iphone_esim",
+            "code": "phone_not_reservable"}, None),
+     ["Cloud Android cannot be reserved. Choose a phone: iphone, iphone_esim"]),
     ((502, {"error": "Stripe could not complete this request; try again shortly.", "code": "payments_unavailable"},
       None), ["Stripe could not complete this request", "Nothing was charged", 'idempotency_key="']),
     ((500, {"error": "The phone service could not complete this request."}, None),
@@ -437,7 +458,8 @@ async def test_the_list_says_where_each_one_stands(api):
     assert by_id[rid(2)] == ("1 x Cloud iPhone with eSIM, annual. pending_payment; deposit of $20.00 not paid. "
                              "It holds no place until a person pays; pass its reservation_id to get the "
                              "Checkout link.")
-    assert by_id[rid(3)] == ("2 x Cloud Android, monthly. cancelled; deposit of $40.00 paid 5 days ago, "
+    # A phone these tools do not reserve, made elsewhere: named by the API's own word.
+    assert by_id[rid(3)] == ("2 x android, monthly. cancelled; deposit of $40.00 paid 5 days ago, "
                              "$40.00 refunded.")
     assert by_id[rid(4)] == ("3 x Cloud iPhone, monthly. queued, position 1 in the queue, 1 of 3 handed over, "
                              "2 still waiting; deposit of $60.00 paid 9 days ago, $40.00 refundable, "
@@ -490,6 +512,18 @@ async def test_one_reservation_in_full(api):
     assert "Deposit of $60.00 paid 9 days ago, $40.00 refundable, $20.00 went onto a first bill." in partly
     assert as_json["reservation_id"] == rid(2) and as_json["checkout_url"] == CHECKOUT + "000002"
     assert missing.is_error and f"No reservation {rid(99)} on this account" in text_of(missing)
+
+
+async def test_a_reservation_for_a_phone_these_tools_do_not_reserve_is_still_read_and_cancelled(api):
+    """One made while an Android was still offered stays on the account. It has no price, so its quote is the deposit."""
+    api.hold(reservation(1, "android", "monthly", 2, "queued", position=3, paid_days_ago=1))
+    async with connected(stdio_server(api)) as s:
+        one = text_of(await call(s, "phone_list_reservations", reservation_id=rid(1)))
+        gone = await cancel(s, rid(1))
+    assert f"Reservation {rid(1)}: 2 x android, monthly." in one
+    assert "Position 3 in the queue." in one
+    assert "First month: the price is confirmed before the phones are handed over." in one
+    assert not gone.is_error and "$40.00 is being refunded to the card that paid" in text_of(gone)
 
 
 @pytest.mark.parametrize("bad", ["../sessions", "rsv_", "rsv_abc/cancel", "rsv_abc?x=1", " ", "sid_0001"])

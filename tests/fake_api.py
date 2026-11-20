@@ -38,8 +38,10 @@ TEXT = [
 
 CHECKOUT = "https://checkout.stripe.com/c/pay/cs_test_"
 DEPOSIT = 2000
-# (standard, intro) cents for one phone for one billing period. A cloud
-# Android can be reserved before it has a price.
+# (standard, intro) cents for one phone for one billing period. For a short
+# while the API took a reservation for a cloud Android, before it had a price.
+# It refuses one now, and these tools never ask, but one made then can still
+# be on the account.
 PRICES = {("iphone", "monthly"): (8000, 5000), ("iphone", "annual"): (76800, 48000),
           ("iphone_esim", "monthly"): (10000, 6500), ("iphone_esim", "annual"): (96000, 62400),
           ("android", "monthly"): (None, None), ("android", "annual"): (None, None)}
@@ -397,8 +399,11 @@ class FakeCloud:
     def reserve(self, user, body, key):
         if set(body) - {"first_name", "last_name", "email", "use_case", "phone_type", "plan", "quantity"}:
             raise _Reply(400, {"error": "Unknown field"})
+        if body.get("phone_type") == "android":
+            raise _Reply(400, {"error": "Cloud Android cannot be reserved. Choose a phone: iphone, iphone_esim",
+                               "code": "phone_not_reservable"})
         if (body.get("phone_type"), body.get("plan")) not in PRICES:
-            raise _Reply(400, {"error": "Choose a phone: iphone, iphone_esim, android"})
+            raise _Reply(400, {"error": "Choose a phone: iphone, iphone_esim"})
         if type(body.get("quantity")) is not int or not 1 <= body["quantity"] <= 50:
             raise _Reply(400, {"error": "Choose between 1 and 50 phones"})
         known = self.reservation_keys.get((user["uid"], key)) if key else None

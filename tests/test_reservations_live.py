@@ -379,14 +379,14 @@ async def test_too_many_unfinished_reservations_are_refused_until_one_is_paid(cl
         await reserve(s)
 
 
-async def test_an_android_is_reserved_before_it_has_a_price(client, local):
-    if local.state.get("android_priced"):
-        pytest.skip("this local phone-cloud was started with --android-priced")
-    async with client(local.account()) as s:
-        made, text = await reserve(s, phone_type="android", quantity=1)
-    assert (made["phone_type"], made["quote"]["priced"], made["quote"]["lines"]) == ("android", False, [])
-    assert "- First month: the price is confirmed before the phones are handed over." in text
-    assert f"- Deposit due now: {_amount(made['quote']['deposit']['total_cents'])}" in text
+async def test_an_android_is_not_reserved_and_the_api_is_never_asked(both, local):
+    async with both(local.account()) as s:
+        refused = await call(s, "phone_reserve", **{**RESERVE, "phone_type": "android"})
+        listed = json.loads(text_of(await call(s, "phone_list_reservations", format="json")))
+    assert refused.is_error
+    assert text_of(refused) == ("Error executing tool phone_reserve: Reservations are for iPhones only (with or "
+                                "without eSIM). Cloud Android emulators are on the $20 plan and are not reserved.")
+    assert listed == []          # refused here, before the API: not even an unpaid reservation
 
 
 async def test_a_checkout_that_ran_out_is_cancelled_with_nothing_charged(client, local):

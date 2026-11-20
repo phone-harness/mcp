@@ -2,8 +2,11 @@
 
 ## Unreleased
 
-- Three tools to reserve a phone the account does not have yet:
+- Three tools to reserve an iPhone the account does not have yet:
   `phone_reserve`, `phone_list_reservations` and `phone_cancel_reservation`.
+  Reservations are for iPhones only (with or without eSIM): `phone_type` is
+  `iphone` or `iphone_esim`, and a request for an Android is refused before
+  anything is sent.
   `phone_reserve` returns the API's quote (the refundable deposit due now, and
   the plan's first billing period at the intro and standard prices) and a
   Stripe Checkout link. A person opens the link and pays; no tool pays, and

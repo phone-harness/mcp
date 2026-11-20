@@ -1,4 +1,4 @@
-"""Reserving a phone the account does not have yet: three tools, and no payment.
+"""Reserving an iPhone the account does not have yet: three tools, and no payment.
 
 `phone_reserve` asks Phone Harness Cloud for phones and answers with the quote
 and a Stripe Checkout link for a refundable deposit. A person opens that link
@@ -9,9 +9,10 @@ no place in the queue, so no result says "reserved" before the API says
 held.
 
 Like the driving tools, these forward the caller's own credential and keep no
-state. Every amount in a result is one the API sent. The one figure written
-here is in words a model reads before it reserves, the deposit for each phone,
-and those words say that the quote is what counts.
+state. Every amount in a result is one the API sent. Two figures are written
+here, both in words a model reads before it reserves: the deposit for each
+phone, where those words say that the quote is what counts, and the Android
+plan's, in the sentence that says an Android is not reserved.
 """
 from __future__ import annotations
 
@@ -22,11 +23,12 @@ import re
 import time
 import urllib.parse
 import uuid
-from typing import Literal
+from typing import Annotated, Literal
 
 import anyio
 from mcp.server.mcpserver import Context
 from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from .cloud import Cloud, CloudError, NotSignedIn, Unreachable
 from .phone import PhoneError, Phones
@@ -42,7 +44,17 @@ NO_SUCH = "No such reservation"
 # Loose on purpose: enough to be safe in a URL path. The API decides what exists.
 RESERVATION_ID = re.compile(r"rsv_[A-Za-z0-9]{1,64}")
 IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9_-]{16,128}")
-LABELS = {"iphone": "Cloud iPhone", "iphone_esim": "Cloud iPhone with eSIM", "android": "Cloud Android"}
+# Only iPhones are reserved. The schema lists these two and the tool checks
+# them itself, so asking for an Android is answered with IPHONES_ONLY and not
+# with a schema error. The CLI and every doc say it in the same words.
+PHONE_TYPES = ("iphone", "iphone_esim")
+PhoneType = Annotated[str, Field(json_schema_extra={"enum": list(PHONE_TYPES)})]
+IPHONES_ONLY = ("Reservations are for iPhones only (with or without eSIM). "
+                "Cloud Android emulators are on the $20 plan and are not reserved.")
+# The API's phone types as a result names them. One these do not name (a
+# reservation from when another phone was offered) is named by the API's own
+# word, and can be cancelled like any other.
+LABELS = {"iphone": "Cloud iPhone", "iphone_esim": "Cloud iPhone with eSIM"}
 TIERS = {"intro": "intro price, once per customer", "standard": "standard price"}
 PAY = ("A person has to open this Stripe Checkout link and pay the deposit. This tool cannot pay, "
        "and you must not pay or enter card details for them:")
@@ -401,14 +413,18 @@ def register(server, cloud_for) -> None:
     @server.tool(name="phone_reserve", title="Reserve a phone",
                  annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False))
     async def reserve(ctx: Context,
-                      phone_type: Literal["iphone", "iphone_esim", "android"],
+                      phone_type: PhoneType,
                       plan: Literal["monthly", "annual"],
                       use_case: str,
                       quantity: int = 1,
                       first_name: str | None = None,
                       last_name: str | None = None,
                       idempotency_key: str | None = None) -> str:
-        """Ask for cloud phones the account does not have yet, and get the quote and a Stripe Checkout link for the deposit. Reserving takes a $20 per phone refundable deposit; the quote in the result is authoritative. One phone per customer is at the intro price, the rest at standard; places are queued in the order deposits were paid. This tool never pays: a person must open the link and pay the deposit, and until they do nothing is reserved and no place in the queue is held. `phone_type` is iphone, iphone_esim (with a real number) or android; `plan` is monthly or annual; `quantity` is 1 to 50 (default 1); `use_case` is what the user wants the phones for, in their words. Ask the user for these rather than guessing. `first_name` and `last_name` put a name on the reservation in place of the account's; pass them only when the user gives one. An account can have five unpaid reservations an hour, and cancelling one does not free a place, so reserve when the user means it and not to look at a price. The result names an `idempotency_key`; pass it back only to repeat a call that failed part way."""
+        """Ask for cloud iPhones the account does not have yet, and get the quote and a Stripe Checkout link for the deposit. Reserving takes a $20 per phone refundable deposit; the quote in the result is authoritative. One phone per customer is at the intro price, the rest at standard; places are queued in the order deposits were paid. This tool never pays: a person must open the link and pay the deposit, and until they do nothing is reserved and no place in the queue is held. `phone_type` is iphone, or iphone_esim for one with an eSIM (a real number). Reservations are for iPhones only (with or without eSIM). Cloud Android emulators are on the $20 plan and are not reserved. `plan` is monthly or annual; `quantity` is 1 to 50 (default 1); `use_case` is what the user wants the phones for, in their words. Ask the user for these rather than guessing. `first_name` and `last_name` put a name on the reservation in place of the account's; pass them only when the user gives one. An account can have five unpaid reservations an hour, and cancelling one does not free a place, so reserve when the user means it and not to look at a price. The result names an `idempotency_key`; pass it back only to repeat a call that failed part way."""
+        if phone_type.strip().lower().startswith("android"):
+            raise PhoneError(IPHONES_ONLY)
+        if phone_type not in PHONE_TYPES:
+            raise PhoneError(f"phone_type must be iphone or iphone_esim, not {phone_type!r}.")
         if isinstance(quantity, bool) or not 1 <= quantity <= MAX_QUANTITY:
             raise PhoneError(f"quantity must be between 1 and {MAX_QUANTITY}.")
         use_case = (use_case or "").strip()
