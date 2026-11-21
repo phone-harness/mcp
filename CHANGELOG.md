@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The coordinate note under `phone_take_screenshot` follows a screen that is
+  on its side. A landscape screenshot was described as covering the portrait
+  size the session started with, so taps worked out from it missed.
 - Three tools to reserve an iPhone the account does not have yet:
   `phone_reserve`, `phone_list_reservations` and `phone_cancel_reservation`.
   Reservations are for iPhones only (with or without eSIM): `phone_type` is
