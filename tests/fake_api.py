@@ -40,6 +40,7 @@ HOST_LOCKED = "The iPhone is locked. Unlock it on the phone, then retry; the hos
 NOT_DONE = "The phone did not complete that operation."
 URL_MAX = 4096
 SAFARI = "com.apple.mobilesafari"
+UNSET = object()        # "no answer was scripted", where None is an answer a host can give
 
 BOUNDS = {"x": 0, "y": 0, "w": 390, "h": 844, "id": "mock"}
 # The capture is twice the coordinate space on each side, like a Retina iPhone,
@@ -157,7 +158,7 @@ class FakeCloud:
         self.locked_code = False      # True: the route passes the host's `409 locked` on; False: its plain 502
         self.passcode = False         # True: a passcode was set on the phone, so a wake leaves it locked
         self.old_host = ()            # ops an iPhone's host does not have yet
-        self.wake_answers = None      # set: what `device.wake` answers, in place of the state it left
+        self.wake_answers = UNSET     # set: what `device.wake` answers, in place of the state it left
         self.not_served = ()          # ops this API's route does not serve yet: an API from before them
 
     # --- lifecycle --------------------------------------------------------------
@@ -413,12 +414,17 @@ class FakeCloud:
         if op == "apps.list":
             return ["com.example.mock", "com.android.chrome"]
         if op == "device.wake":
-            # A Home press opens a phone that has no passcode. One that has is left on its passcode page.
+            # phone-host's answer: the state it left the phone in, the state it
+            # found, and whether it pressed anything. Home opens a phone that
+            # has no passcode. One that has is left on its passcode page.
+            was = "locked" if s["id"] in self.locked else "ready"
             if not self.passcode:
                 self.locked.discard(s["id"])
-            if self.wake_answers is not None:
+            if self.wake_answers is not UNSET:
                 return self.wake_answers
-            return "locked" if s["id"] in self.locked else "ready"
+            woke = was != "ready"
+            return {"state": "locked" if s["id"] in self.locked else "ready", "was": was, "woke": woke,
+                    "through": "home" if woke else None}
         if op == "url.open":
             return SAFARI
         return None

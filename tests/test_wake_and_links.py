@@ -15,15 +15,14 @@ import pytest
 
 from fake_api import HOST_LOCKED, NOT_DONE, SAFARI
 from phone_harness_mcp.phone import LOCKED, MAYBE_ASLEEP
-from phone_harness_mcp.server import INSTRUCTIONS, NO_LINK, NO_WAKE, STILL_LOCKED, URL_MAX
+from phone_harness_mcp.server import (ALREADY_AWAKE, AWAKE, INSTRUCTIONS, NO_LINK, NO_WAKE, NOT_UP, STILL_DARK,
+                                      STILL_LOCKED, STILL_STANDBY, URL_MAX)
 from support import connected, stdio_server, text_of
 
 pytestmark = pytest.mark.anyio
 
 ROOT = Path(__file__).resolve().parent.parent
 LINK = "https://example.com/sign-in?token=s3cr3t-s3cr3t-s3cr3t"
-AWAKE = ("The phone is awake and past its lock screen. It shows whatever was open before it slept: take a "
-         "screenshot or list the elements on screen to see.")
 OPENED = "Opened the link in the phone's browser. Give the page a moment to load, then read the screen."
 
 
@@ -65,7 +64,8 @@ async def test_the_descriptions_say_what_a_model_has_to_know(api):
     wake, link = tools["phone_wake"], tools["phone_open_url"]
     # There is no passcode, so there is none to ask the user for.
     assert "set up with no passcode" in wake and "never ask the user for a code" in wake
-    assert "lock screen" in wake and "StandBy" in wake
+    assert "lock screen" in wake and "StandBy" in wake and "screenshot is black" in wake
+    assert "does nothing to a phone that is already awake" in wake
     assert "Android emulator has no such control" in wake
     # https only, and what to do first when the phone is locked.
     assert "must start with https://" in link and str(URL_MAX) in link
@@ -75,7 +75,8 @@ async def test_the_descriptions_say_what_a_model_has_to_know(api):
 
 def test_the_instructions_say_when_to_wake_and_that_there_is_no_passcode():
     paragraph = next(p for p in INSTRUCTIONS.split("\n\n") if "phone_wake" in p)
-    assert "asleep, on its lock screen or showing the StandBy clock" in paragraph
+    assert "asleep (a black screenshot), on its lock screen or showing the StandBy clock" in paragraph
+    assert "do nothing or are refused" in paragraph      # a black screen takes a tap and shows nothing
     assert "set up with no passcode, so never ask the user for one" in paragraph
     assert "phone_open_url opens an https link" in paragraph
     # One paragraph of its own, so another branch's paragraph merges beside it.
@@ -108,34 +109,54 @@ async def test_wake_sends_one_op_and_says_the_phone_is_awake(api):
     assert sid not in api.locked
 
 
-async def test_waking_a_phone_that_is_awake_changes_nothing(api):
+async def test_waking_a_phone_that_is_awake_presses_nothing_and_says_so(api):
+    """A model that woke the phone because a tap failed learns the phone was not the reason."""
     async with connected(stdio_server(api)) as s:
         sid = api.running("ios")
         first = text_of(await s.call_tool("phone_wake", {"device": sid}))
         second = text_of(await s.call_tool("phone_wake", {"device": sid}))
-    assert first == second == AWAKE
+    assert first == second == ALREADY_AWAKE
+    assert "nothing was pressed" in ALREADY_AWAKE
 
 
-@pytest.mark.parametrize("answer", ["ready", " Ready ", {"state": "ready"}, {"state": "ready", "woke": True},
-                                    True, None, {}])
+@pytest.mark.parametrize("answer", [
+    {"state": "ready", "was": "asleep", "woke": True, "through": "home"},       # two Home presses from sleep
+    {"state": "ready", "was": "standby", "woke": True, "through": "app"},      # StandBy: an app, then Home
+    {"state": "ready", "was": "locked", "woke": True, "through": "home"},
+    {"state": " Ready "}, {"state": "ready", "woke": None},
+    "ready", True, None, {},
+])
 async def test_every_way_of_saying_awake_is_read(api, answer):
-    """The host reports the state it left the phone in. A word and an object
-    with a `state` both say it, and a host that reports nothing has not failed."""
+    """The host answers {state, was, woke, through}. A bare state word says it
+    too, and a host that reports nothing has not failed."""
     api.wake_answers = answer
     async with connected(stdio_server(api)) as s:
         sid = api.running("ios")
         r = await s.call_tool("phone_wake", {"device": sid})
     assert not r.is_error and text_of(r) == AWAKE
+    assert "may be on its Home Screen" in AWAKE        # getting past StandBy ends there
 
 
-@pytest.mark.parametrize("answer", ["locked", "standby", {"state": "locked"}, {"state": "StandBy"}])
-async def test_a_phone_still_locked_after_the_wake_is_an_error_that_says_why(api, answer):
+@pytest.mark.parametrize("answer,says", [
+    ({"state": "locked", "was": "locked", "woke": True, "through": "home"}, STILL_LOCKED),
+    ({"state": "standby", "was": "standby", "woke": True, "through": "app"}, STILL_STANDBY),
+    ({"state": "asleep", "was": "asleep", "woke": True, "through": "home"}, STILL_DARK),
+    ({"state": "not-running", "was": "not-running", "woke": False, "through": None}, NOT_UP),
+    ("locked", STILL_LOCKED), ({"state": "StandBy"}, STILL_STANDBY),
+])
+async def test_a_phone_the_wake_did_not_bring_back_is_an_error_that_says_what_next(api, answer, says):
     api.wake_answers = answer
     async with connected(stdio_server(api)) as s:
         sid = api.running("ios")
         r = await s.call_tool("phone_wake", {"device": sid})
-    assert r.is_error and text_of(r) == failed("phone_wake", STILL_LOCKED)
+    assert r.is_error and text_of(r) == failed("phone_wake", says)
+
+
+def test_each_of_those_sentences_says_what_to_do():
     assert "passcode has been set" in STILL_LOCKED and "tell the user" in STILL_LOCKED
+    assert "StandBy" in STILL_STANDBY and "tell the user" in STILL_STANDBY
+    assert "take a screenshot" in STILL_DARK and "phone_press_button" in STILL_DARK
+    assert "phone_list_available_devices" in NOT_UP
 
 
 async def test_a_passcode_someone_set_is_not_got_past(api):
@@ -152,12 +173,12 @@ async def test_a_passcode_someone_set_is_not_got_past(api):
 
 
 async def test_a_state_this_server_does_not_know_is_reported_as_it_is(api):
-    api.wake_answers = "not-running"
+    api.wake_answers = {"state": "charging"}
     async with connected(stdio_server(api)) as s:
         sid = api.running("ios")
         r = await s.call_tool("phone_wake", {"device": sid})
     assert r.is_error
-    assert text_of(r) == failed("phone_wake", "The phone did not wake: it reports 'not-running'. Take a screenshot to "
+    assert text_of(r) == failed("phone_wake", "The phone did not wake: it reports 'charging'. Take a screenshot to "
                                            "see it, and try phone_wake once more.")
 
 

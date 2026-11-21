@@ -31,7 +31,7 @@ Start with phone_list_available_devices. If a phone is running, pass its id as `
 
 To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked.
 
-A cloud iPhone that has been left alone can be asleep, on its lock screen or showing the StandBy clock. A screenshot shows that, and taps, typing and app launches are refused until it is woken. phone_wake wakes it. These phones are set up with no passcode, so never ask the user for one. phone_open_url opens an https link in an iPhone's browser whole, with no typing: use it for a long link or a sign-in link.
+A cloud iPhone that has been left alone can be asleep (a black screenshot), on its lock screen or showing the StandBy clock. Taps, typing and app launches then do nothing or are refused. phone_wake brings it back. These phones are set up with no passcode, so never ask the user for one. phone_open_url opens an https link in an iPhone's browser whole, with no typing: use it for a long link or a sign-in link.
 
 An account that has no cloud iPhone yet, or needs more of them, reserves them with a $20 per phone refundable deposit. phone_reserve returns a quote, which is authoritative, and a Stripe Checkout link. Reservations are for iPhones only (with or without eSIM). Cloud Android emulators are on the $20 plan and are not reserved. The iPhone prices above are the standard ones: a customer's first phone is at the intro price, so tell the user what the quote from phone_reserve says, not a price from memory. Give the link to the user: only a person can pay it, no tool here pays, and nothing is reserved until they do. Places in the queue go in the order deposits were paid, and nothing moves one up. phone_list_reservations shows each reservation's status and place; the website has no list of reservations, so that tool is the list. phone_cancel_reservation gives a place up, and the deposit still held goes back automatically to the card that paid; it needs confirm=true, which is the user's yes, so ask first. When a phone is handed over, its deposit becomes a credit on the first bill and is no longer refundable. An account can have five unpaid reservations an hour, and cancelling one does not free a place."""
 
@@ -73,8 +73,21 @@ NO_LINK = (
 )
 
 URL_MAX = 4096          # the limit the phone's host keeps; a signed storage link is under half of it
+
+# What phone_wake says for each state the phone's host can leave a phone in.
+AWAKE = ("The phone is awake and takes input. Take a screenshot or list the elements on screen to see where it "
+         "is: it may be on its Home Screen and not where it was left.")
+ALREADY_AWAKE = ("The phone was already awake, so nothing was pressed. Take a screenshot or list the elements on "
+                 "screen to see what it shows.")
 STILL_LOCKED = ("The phone is still on its lock screen after the wake. Call phone_wake once more. If it stays "
                 "locked, a passcode has been set on this phone: no tool here enters one, so tell the user.")
+STILL_STANDBY = ("The phone is still showing the StandBy clock after the wake. Call phone_wake once more. If it "
+                 "stays there, tell the user the phone is stuck in StandBy.")
+STILL_DARK = ("The phone's screen is still black after the wake. An app that shows nothing looks the same, and "
+              "taps are let through: take a screenshot, then press HOME with phone_press_button.")
+NOT_UP = ("The phone's session is not up, so it could not be woken. phone_list_available_devices shows whether "
+          "it is still running.")
+NOT_WOKEN = {"locked": STILL_LOCKED, "standby": STILL_STANDBY, "asleep": STILL_DARK, "not-running": NOT_UP}
 
 
 def _cannot(platform: str | None, android: str, iphone: str, unknown: str) -> str:
@@ -98,17 +111,20 @@ def checked_url(url) -> str:
 
 
 def _woke(result) -> str:
-    """What `device.wake` answered, as a sentence. The phone's host reports the
-    state it left the phone in: a word, or an object with a `state`."""
-    state = result.get("state") if isinstance(result, dict) else result
+    """What `device.wake` answered, as a sentence. The phone's host answers
+    {state, was, woke, through}: the state it left the phone in (ready, locked,
+    standby, asleep or not-running), the state it found, and whether it had to
+    press anything. A bare state word is read too, and a host that reports
+    nothing has not failed."""
+    report = result if isinstance(result, dict) else {"state": result}
+    state = report.get("state")
     state = state.strip().lower() if isinstance(state, str) else ""
-    if state in ("locked", "standby"):
-        raise PhoneError(STILL_LOCKED)
+    if state in NOT_WOKEN:
+        raise PhoneError(NOT_WOKEN[state])
     if state and state != "ready":
         raise PhoneError(f"The phone did not wake: it reports {state!r}. Take a screenshot to see it, and try "
                          "phone_wake once more.")
-    return ("The phone is awake and past its lock screen. It shows whatever was open before it slept: take a "
-            "screenshot or list the elements on screen to see.")
+    return ALREADY_AWAKE if report.get("woke") is False else AWAKE
 
 
 def stdio_cloud(credentials, url: str | None = None):
@@ -399,7 +415,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     @server.tool(name="phone_wake", title="Wake the phone", annotations=WAKE)
     async def wake(ctx: Context, device: str) -> str:
-        """Wake a cloud iPhone that is asleep, on its lock screen or showing the StandBy clock, and get it past the lock screen. Cloud iPhones are set up with no passcode, so nothing is typed: never ask the user for a code. Call it when a screenshot shows a lock screen or a clock where the Home Screen should be, or when a tap, typing or an app launch is refused because the phone is locked. Then read the screen again. An Android emulator has no such control."""
+        """Wake a cloud iPhone that is asleep, on its lock screen or showing the StandBy clock, and get it past the lock screen. Cloud iPhones are set up with no passcode, so nothing is typed: never ask the user for a code. Call it when a screenshot is black or shows a lock screen or a clock where the Home Screen should be, or when a tap, typing or an app launch is refused because the phone is locked. It does nothing to a phone that is already awake. Then read the screen again: the phone may be on its Home Screen. An Android emulator has no such control."""
         ph = phones(ctx)
         try:
             result = await _thread(ph.op, device, "device.wake")
