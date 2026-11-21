@@ -31,10 +31,14 @@ Start with phone_list_available_devices. If a phone is running, pass its id as `
 
 To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked.
 
+A cloud iPhone that has been left alone can be asleep, on its lock screen or showing the StandBy clock. A screenshot shows that, and taps, typing and app launches are refused until it is woken. phone_wake wakes it. These phones are set up with no passcode, so never ask the user for one. phone_open_url opens an https link in an iPhone's browser whole, with no typing: use it for a long link or a sign-in link.
+
 An account that has no cloud iPhone yet, or needs more of them, reserves them with a $20 per phone refundable deposit. phone_reserve returns a quote, which is authoritative, and a Stripe Checkout link. Reservations are for iPhones only (with or without eSIM). Cloud Android emulators are on the $20 plan and are not reserved. The iPhone prices above are the standard ones: a customer's first phone is at the intro price, so tell the user what the quote from phone_reserve says, not a price from memory. Give the link to the user: only a person can pay it, no tool here pays, and nothing is reserved until they do. Places in the queue go in the order deposits were paid, and nothing moves one up. phone_list_reservations shows each reservation's status and place; the website has no list of reservations, so that tool is the list. phone_cancel_reservation gives a place up, and the deposit still held goes back automatically to the card that paid; it needs confirm=true, which is the user's yes, so ask first. When a phone is handed over, its deposit becomes a credit on the first bill and is no longer refundable. An account can have five unpaid reservations an hour, and cancelling one does not free a place."""
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 TOUCH = ToolAnnotations(read_only_hint=False, destructive_hint=False)
+# Waking a phone that is already awake changes nothing, so it is safe to repeat.
+WAKE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True)
 
 BUTTONS = {
     "HOME": ("nav.home", {}),
@@ -47,6 +51,64 @@ NO_BACK = ("This phone has no Back button (an iPhone). Use the app's own back co
 NO_APP_LIST = "This phone does not list its apps. Launch one by its name with phone_launch_app."
 NO_FOREGROUND = ("This phone does not report which app is in front. Take a screenshot or list the elements on screen "
                  "to see where you are.")
+
+# What a phone that cannot do one of these is told to do instead, as (an
+# Android emulator, an iPhone, a phone the API would not describe). An Android
+# emulator never can. An iPhone can once its host has the op, so "yet".
+NO_WAKE = (
+    ("This phone is an Android emulator, which has no wake control. Press HOME with phone_press_button, then "
+     "take a screenshot to see where it is."),
+    ("This iPhone has no wake control yet. Press HOME with phone_press_button, which wakes a sleeping iPhone, "
+     "then take a screenshot to see whether it did."),
+    ("This phone has no wake control. Press HOME with phone_press_button, then take a screenshot to see where "
+     "it is."),
+)
+NO_LINK = (
+    ("This phone is an Android emulator, which cannot be handed a link. Launch its browser with "
+     "phone_launch_app, tap the address bar, and type the address with phone_type_keys."),
+    ("This iPhone cannot be handed a link yet. Launch Safari with phone_launch_app, tap the address bar, and "
+     "type the address with phone_type_keys."),
+    ("This phone cannot be handed a link. Launch its browser with phone_launch_app, tap the address bar, and "
+     "type the address with phone_type_keys."),
+)
+
+URL_MAX = 4096          # the limit the phone's host keeps; a signed storage link is under half of it
+STILL_LOCKED = ("The phone is still on its lock screen after the wake. Call phone_wake once more. If it stays "
+                "locked, a passcode has been set on this phone: no tool here enters one, so tell the user.")
+
+
+def _cannot(platform: str | None, android: str, iphone: str, unknown: str) -> str:
+    return {"android": android, "ios": iphone}.get(platform or "", unknown)
+
+
+def checked_url(url) -> str:
+    """The link, if a phone may be handed it: the checks the phone's host
+    makes, made here first so the model hears which one failed. No message
+    repeats the link, because it is often a one-time sign-in link."""
+    link = url.strip() if isinstance(url, str) else ""
+    if not link.startswith("https://") or len(link) == len("https://"):
+        raise PhoneError("url must be an https:// link. Other schemes (http, file, javascript, an app's own) "
+                         "are refused.")
+    if len(link) > URL_MAX:
+        raise PhoneError(f"url is {len(link)} characters long, and a phone takes at most {URL_MAX}.")
+    if any(ord(c) < 33 or ord(c) > 126 for c in link):
+        raise PhoneError("url must be one line of plain ASCII with no spaces. Percent-encode anything else "
+                         "(a space is %20).")
+    return link
+
+
+def _woke(result) -> str:
+    """What `device.wake` answered, as a sentence. The phone's host reports the
+    state it left the phone in: a word, or an object with a `state`."""
+    state = result.get("state") if isinstance(result, dict) else result
+    state = state.strip().lower() if isinstance(state, str) else ""
+    if state in ("locked", "standby"):
+        raise PhoneError(STILL_LOCKED)
+    if state and state != "ready":
+        raise PhoneError(f"The phone did not wake: it reports {state!r}. Take a screenshot to see it, and try "
+                         "phone_wake once more.")
+    return ("The phone is awake and past its lock screen. It shows whatever was open before it slept: take a "
+            "screenshot or list the elements on screen to see.")
 
 
 def stdio_cloud(credentials, url: str | None = None):
@@ -332,6 +394,29 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
         except Unsupported as e:
             raise PhoneError(NO_BACK if button == "BACK" else str(e)) from None
         return f"Pressed {button}."
+
+    # --- waking it, and handing it a link -----------------------------------------
+
+    @server.tool(name="phone_wake", title="Wake the phone", annotations=WAKE)
+    async def wake(ctx: Context, device: str) -> str:
+        """Wake a cloud iPhone that is asleep, on its lock screen or showing the StandBy clock, and get it past the lock screen. Cloud iPhones are set up with no passcode, so nothing is typed: never ask the user for a code. Call it when a screenshot shows a lock screen or a clock where the Home Screen should be, or when a tap, typing or an app launch is refused because the phone is locked. Then read the screen again. An Android emulator has no such control."""
+        ph = phones(ctx)
+        try:
+            result = await _thread(ph.op, device, "device.wake")
+        except Unsupported:
+            raise PhoneError(_cannot(await _thread(ph.platform, device), *NO_WAKE)) from None
+        return _woke(result)
+
+    @server.tool(name="phone_open_url", title="Open a link", annotations=TOUCH)
+    async def open_url(ctx: Context, device: str, url: str) -> str:
+        """Open an https link on the phone, in its browser (Safari on an iPhone). The link arrives whole, with no typing and no clipboard, so use it for a long link or a sign-in link. `url` must start with https:// and have no spaces, at most 4096 characters. The phone has to be awake: call phone_wake first if it is locked. Cloud iPhones only; on an Android emulator, launch the browser and type the address."""
+        link = checked_url(url)
+        ph = phones(ctx)
+        try:
+            await _thread(ph.op, device, "url.open", url=link)
+        except Unsupported:
+            raise PhoneError(_cannot(await _thread(ph.platform, device), *NO_LINK)) from None
+        return "Opened the link in the phone's browser. Give the page a moment to load, then read the screen."
 
     # --- apps -------------------------------------------------------------------
 

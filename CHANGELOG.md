@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Two tools for a cloud iPhone: `phone_wake` and `phone_open_url`.
+  `phone_wake` wakes a phone that is asleep, on its lock screen or showing the
+  StandBy clock, and gets it past the lock screen. Cloud iPhones are set up
+  with no passcode, so nothing is typed. `phone_open_url` opens an https link
+  in the phone's browser whole, with no typing; anything that is not one line
+  of https, at most 4096 characters, is refused before it is sent, and the
+  link is never repeated in a result or an error.
+  A tap, typing, an app launch or a link refused because the iPhone is locked
+  now says to call `phone_wake`. On an Android emulator, and against an API or
+  a phone host that does not have these yet, each tool says what to do instead.
 - Three tools to reserve an iPhone the account does not have yet:
   `phone_reserve`, `phone_list_reservations` and `phone_cancel_reservation`.
   Reservations are for iPhones only (with or without eSIM): `phone_type` is

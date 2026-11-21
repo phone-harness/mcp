@@ -20,6 +20,25 @@ READY_WAIT = 240        # seconds to wait for a starting phone before giving it 
 BUSY_WAIT = 12          # seconds of retrying a 409 "busy" before the model is told
 DEFAULT_MINUTES = 30
 
+# An iPhone on its lock screen. The phone's host refuses to touch it and says
+# so with this code. The API's op route answers a plain 502 for that refusal
+# today, so both are read: the code when the API passes it on, and otherwise a
+# 502 from an op the host only refuses on a locked phone.
+LOCKED_CODE = "locked"
+LOCKED = ("The iPhone is locked or asleep. Call phone_wake, then try again. A cloud iPhone is set up with no "
+          "passcode, so there is nothing to type and nothing to ask the user for.")
+# How the op route begins its 400 for a name it does not serve; the names follow.
+NOT_SERVED = "op must be one of:"
+MAYBE_ASLEEP = ("If the iPhone is asleep, on its lock screen or showing the StandBy clock (a screenshot shows "
+                "which), call phone_wake and try again.")
+
+
+def needs_awake(op: str) -> bool:
+    """Does the phone's host refuse this op while an iPhone shows its lock screen?
+    Touching the screen, typing, the app switcher, launching an app and opening
+    a link: yes. Looking at the screen and pressing Home: no."""
+    return op.startswith("input.") or op in ("nav.recents", "apps.launch", "url.open")
+
 
 class PhoneError(ToolError):
     """A message for the model: what went wrong and what to do about it.
@@ -30,6 +49,10 @@ class PhoneError(ToolError):
 
 class Unsupported(PhoneError):
     """This phone cannot do that, and retrying will not help."""
+
+
+class Locked(PhoneError):
+    """The phone is on its lock screen, and waking it is what gets past that."""
 
 
 def minutes_left(session: dict) -> int | None:
@@ -83,6 +106,16 @@ class Phones:
     def stop(self, sid: str) -> dict:
         return self._call("DELETE", f"/sessions/{sid}", sid=sid)
 
+    def platform(self, sid: str) -> str | None:
+        """"ios" or "android", or None when the API will not say. Asked only to
+        word an error that has already happened, so it never raises one."""
+        try:
+            session = self.cloud.request("GET", f"/sessions/{sid}")
+        except (CloudError, NotSignedIn, Unreachable):
+            return None
+        value = session.get("platform") if isinstance(session, dict) else None
+        return value if isinstance(value, str) else None
+
     # --- ops ------------------------------------------------------------------
 
     def ops(self, sid: str) -> list[str]:
@@ -104,7 +137,17 @@ class Phones:
                     retried_outage = True        # the phone's input service is restarting; once more
                     time.sleep(2)
                     continue
-                raise self._translate(e, sid) from None
+                if e.status == 400 and not e.unsupported and e.error.startswith(NOT_SERVED):
+                    # The route names what it serves, and this op is not on the
+                    # list: an API from before the op was offered. To the model
+                    # that is a phone that cannot do it, not a mistake of its own.
+                    raise Unsupported(f"Phone Harness Cloud does not offer {op!r} yet.") from None
+                error = self._translate(e, sid)
+                if e.status == 502 and needs_awake(op) and self.platform(sid) == "ios":
+                    # The API does not say why the phone did not do it. A locked
+                    # iPhone is one reason, and the one a tool here can fix.
+                    error = PhoneError(f"{error} {MAYBE_ASLEEP}")
+                raise error from None
             except (NotSignedIn, Unreachable) as e:
                 raise PhoneError(str(e)) from None
 
@@ -146,6 +189,8 @@ class Phones:
                               "phone_list_available_devices shows what is running.")
         if e.status == 400 and e.unsupported:
             return Unsupported(e.error)
+        if e.status == 409 and e.code == LOCKED_CODE:
+            return Locked(LOCKED)
         if e.status in (400, 403, 404, 409, 410, 413):
             text = e.error
             if e.code and e.code not in text:

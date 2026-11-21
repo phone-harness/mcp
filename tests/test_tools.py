@@ -19,6 +19,8 @@ EXPECTED_TOOLS = {
 # beside the set, not inside it, so that another branch adding its own tools to
 # the set (PHO-310's network tools) merges with this one and both sets stay.
 EXPECTED_TOOLS |= {"phone_reserve", "phone_list_reservations", "phone_cancel_reservation"}
+# Waking an iPhone that is asleep or locked, and handing it a link (PHO-335).
+EXPECTED_TOOLS |= {"phone_wake", "phone_open_url"}
 
 
 async def test_tool_names_follow_mobile_mcp(api):

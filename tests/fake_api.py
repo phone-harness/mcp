@@ -6,6 +6,11 @@ op lands in `.ops`, every request in `.requests`, so a test can assert what the
 server actually sent. The same process also plays the OAuth token endpoint, so
 the CLI-login refresh path can be tested without Clerk.
 
+An iPhone here can be on its lock screen (`.locked`), as a real one is after it
+has been left alone. The phone's host then refuses to touch it, and the op
+route answers what phone-cloud's answers: a plain 502 with no reason. Set
+`.locked_code` for an API that passes the host's own `409 locked` on instead.
+
 It also plays the reservation routes (docs/api.md, "Reservations"): a phone is
 asked for, the answer is a quote and a Stripe Checkout link, and nothing here
 ever charges anyone. `.reservation_calls` keeps each of those requests with its
@@ -24,7 +29,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PUBLIC_OPS = ("screen.capture", "screen.bounds", "screen.require", "screen.text", "screen.text_pixels",
               "input.tap", "input.press", "input.drag", "input.scroll", "input.keys", "input.text",
-              "nav.home", "nav.back", "nav.recents", "apps.launch", "apps.current", "apps.list", "tree")
+              "nav.home", "nav.back", "nav.recents", "apps.launch", "apps.current", "apps.list", "tree",
+              # Admitted by name, not by a `device.` prefix: waking an iPhone, and handing it a link.
+              "device.wake", "url.open")
+# What the phone's host will not do while an iPhone shows its lock screen
+# (phone-host, `OPS`). Looking at the screen and pressing Home are not here.
+GATED = ("screen.require", "input.tap", "input.press", "input.drag", "input.scroll", "input.keys", "input.text",
+         "nav.recents", "apps.launch", "url.open")
+HOST_LOCKED = "The iPhone is locked. Unlock it on the phone, then retry; the host never enters a passcode."
+NOT_DONE = "The phone did not complete that operation."
+URL_MAX = 4096
+SAFARI = "com.apple.mobilesafari"
 
 BOUNDS = {"x": 0, "y": 0, "w": 390, "h": 844, "id": "mock"}
 # The capture is twice the coordinate space on each side, like a Retina iPhone,
@@ -138,6 +153,12 @@ class FakeCloud:
         self.reserved_names = {}      # reservation_id -> [first, last] as the API would store them
         self.reservations_live = True  # False: an API from before reservations; every route under it is a 404
         self.checkout = None          # set: every new reservation's checkout_url is this instead
+        self.locked = set()           # ids of sessions whose iPhone shows its lock screen
+        self.locked_code = False      # True: the route passes the host's `409 locked` on; False: its plain 502
+        self.passcode = False         # True: a passcode was set on the phone, so a wake leaves it locked
+        self.old_host = ()            # ops an iPhone's host does not have yet
+        self.wake_answers = None      # set: what `device.wake` answers, in place of the state it left
+        self.not_served = ()          # ops this API's route does not serve yet: an API from before them
 
     # --- lifecycle --------------------------------------------------------------
 
@@ -158,7 +179,9 @@ class FakeCloud:
                 fake.handle(self, "DELETE")
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        # A short poll, because `stop` waits one out and every test stops a server.
+        self._thread = threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": 0.02},
+                                        daemon=True)
         self._thread.start()
         return self
 
@@ -259,7 +282,7 @@ class FakeCloud:
             if len(parts) == 3 and parts[2] == "ops" and method == "GET":
                 if s["state"] != "ready":
                     raise _Reply(409, {"error": "the phone is not ready"})
-                return 200, {"ops": [op for op in PUBLIC_OPS if op not in self.unsupported(s)]}, None
+                return 200, {"ops": [op for op in self.served() if op not in self.unsupported(s)]}, None
             if len(parts) == 3 and parts[2] == "op" and method == "POST":
                 return self.run_op(s, self._body(h))
         raise _Reply(404, {"error": "not found"})
@@ -299,6 +322,17 @@ class FakeCloud:
         self.sessions[sid] = s
         return 202, self.public(s), None
 
+    def running(self, platform="ios", uid="u_1"):
+        """A phone that is already running, and its session id. A test about
+        what a running phone does need not wait the two seconds a start takes."""
+        self._n += 1
+        sid = f"s_{self._n:04d}"
+        self.sessions[sid] = {"id": sid, "uid": uid, "state": "ready", "platform": platform,
+                              "kind": "device" if platform == "ios" else "emulator",
+                              "device": "iPhone" if platform == "ios" else "Android emulator", "polls": 0,
+                              "timeout_seconds": 1800, "expires_at": time.time() + 1800, "created": {}}
+        return sid
+
     def tick(self, s):
         if s["state"] == "provisioning":
             s["polls"] += 1
@@ -312,16 +346,20 @@ class FakeCloud:
         out["screen"] = {"w": BOUNDS["w"], "h": BOUNDS["h"]} if s["state"] == "ready" else None
         return out
 
-    @staticmethod
-    def unsupported(s):
-        return {"nav.back", "apps.list", "tree"} if s["platform"] == "ios" else {"nav.back"}
+    def served(self):
+        return [op for op in PUBLIC_OPS if op not in self.not_served]
+
+    def unsupported(self, s):
+        if s["platform"] == "ios":
+            return {"nav.back", "apps.list", "tree"} | set(self.old_host)
+        return {"nav.back", "device.wake", "url.open"}      # the Android worker has neither
 
     def run_op(self, s, body):
         if s["state"] != "ready":
             raise _Reply(409, {"error": "the phone is not ready"})
         op, kw = body.get("op"), body.get("kw") or {}
-        if not isinstance(op, str) or op not in PUBLIC_OPS:
-            raise _Reply(400, {"error": "op must be one of: " + ", ".join(PUBLIC_OPS)})
+        if not isinstance(op, str) or op not in self.served():
+            raise _Reply(400, {"error": "op must be one of: " + ", ".join(self.served())})
         if not isinstance(kw, dict) or not all(isinstance(k, str) for k in kw):
             raise _Reply(400, {"error": "kw must be an object with string keys"})
         if "op" in kw or "path" in kw:
@@ -337,7 +375,23 @@ class FakeCloud:
             self.ops.append((s["id"], op, kw))
         if op in self.unsupported(s):
             raise _Reply(400, {"error": f"this phone cannot {op!r}", "unsupported": True})
+        # The API checks an iPhone's arguments before the phone's host is asked.
+        if op == "device.wake" and kw:
+            raise _Reply(400, {"error": "device.wake did not accept those arguments"})
+        if op == "url.open" and not self.good_url(kw):
+            raise _Reply(400, {"error": "url.open did not accept those arguments"})
+        if s["id"] in self.locked and op in GATED:
+            if self.locked_code:
+                raise _Reply(409, {"error": HOST_LOCKED, "code": "locked"})
+            raise _Reply(502, {"error": NOT_DONE})
         return 200, {"result": self.answer(s, op, kw)}, None
+
+    @staticmethod
+    def good_url(kw):
+        """phone-host's `checked_url`: https, one line of printable ASCII, at most URL_MAX."""
+        url = kw.get("url")
+        return (set(kw) == {"url"} and isinstance(url, str) and url.startswith("https://")
+                and len(url) <= URL_MAX and all(33 <= ord(c) <= 126 for c in url))
 
     def answer(self, s, op, kw):
         if op == "screen.capture":
@@ -358,6 +412,15 @@ class FakeCloud:
             return "com.example.mock"
         if op == "apps.list":
             return ["com.example.mock", "com.android.chrome"]
+        if op == "device.wake":
+            # A Home press opens a phone that has no passcode. One that has is left on its passcode page.
+            if not self.passcode:
+                self.locked.discard(s["id"])
+            if self.wake_answers is not None:
+                return self.wake_answers
+            return "locked" if s["id"] in self.locked else "ready"
+        if op == "url.open":
+            return SAFARI
         return None
 
 
