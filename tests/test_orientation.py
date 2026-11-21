@@ -423,7 +423,7 @@ async def test_a_502_from_another_op_says_nothing_about_a_turn(api):
 
 
 async def test_a_turn_is_waited_for_longer_than_any_other_op(api, monkeypatch):
-    """Changing the lock goes through Settings, and one call can do it twice: about a minute each."""
+    """Changing the lock goes through Settings: about 46 s on the test phone, where a plain turn takes one or two."""
     waits = {}
     real = Cloud.request
 

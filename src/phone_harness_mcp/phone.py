@@ -19,9 +19,10 @@ from .cloud import Cloud, CloudError, NotSignedIn, Unreachable
 READY_WAIT = 240        # seconds to wait for a starting phone before giving it back, as the CLI does
 BUSY_WAIT = 12          # seconds of retrying a 409 "busy" before the model is told
 OP_WAIT = 90            # seconds the API is given to answer one op
-# Turning a phone can go through Settings twice: to turn Portrait Orientation
-# Lock off before the turn, and to put it back after a turn to portrait. The
-# phone's host says about a minute each. Under the hosted server's 300 s.
+# A turn that has to change Portrait Orientation Lock goes through Settings
+# first: about 46 s on the phone it was measured on, where a plain turn takes a
+# second or two. The phone's host says to allow two minutes. Under the hosted
+# server's 300 s, with room for the op that reads the size afterwards.
 SLOW_OPS = {"device.rotate": 200}
 DEFAULT_MINUTES = 30
 
@@ -40,7 +41,7 @@ MAYBE_ASLEEP = ("If the iPhone is asleep, on its lock screen or showing the Stan
 # rotation lock takes longer than the API has waited for an op, and the phone's
 # host carries on. Asking again at once would start a second turn under the
 # first, so the sentence says to look first.
-MAYBE_STILL_TURNING = ("A turn that has to change the phone's rotation lock first takes a minute or two and may "
+MAYBE_STILL_TURNING = ("A turn that has to change the phone's rotation lock first takes about a minute and may "
                        "still be going: wait a minute, then take a screenshot to see which way up the phone is "
                        "before asking again.")
 
