@@ -143,6 +143,9 @@ class FakeCloud:
         self.outage_times = 0   # the next N ops answer 503
         self.lock = threading.Lock()
         self._png = base64.b64encode(solid_png(*CAPTURE_SIZE)).decode()
+        self._png_wide = base64.b64encode(solid_png(CAPTURE_SIZE[1], CAPTURE_SIZE[0])).decode()
+        self.turned = set()           # ids of sessions whose screen is on its side: a landscape app, a turned phone
+        self.stale_bounds = False     # True: the size reported is the one the session started with, turned or not
         self._n = 0
         self._server = None
         self._thread = None
@@ -401,16 +404,22 @@ class FakeCloud:
         return (set(kw) == {"url"} and isinstance(url, str) and url.startswith("https://")
                 and len(url) <= URL_MAX and all(33 <= ord(c) <= 126 for c in url))
 
+    def landscape(self, s):
+        """Is the screen on its side? A landscape app is (`turned`), and so is a
+        phone that was turned, when the app in front turns with it."""
+        return s["id"] in self.turned or (s.get("orientation", "portrait") != "portrait" and self.app_turns)
+
     def bounds(self, s):
-        """The screen's size: on its side once the phone is turned, when the app in front turns with it."""
+        """The screen's size as the API reports it. phone-host keeps the size the
+        session started with (`stale_bounds`); the screenshot itself always turns."""
         b = dict(BOUNDS)
-        if s.get("orientation", "portrait") != "portrait" and self.app_turns:
+        if self.landscape(s) and not self.stale_bounds:
             b["w"], b["h"] = BOUNDS["h"], BOUNDS["w"]
         return b
 
     def answer(self, s, op, kw):
         if op == "screen.capture":
-            return {"png_b64": self._png, "bounds": self.bounds(s)}
+            return {"png_b64": self._png_wide if self.landscape(s) else self._png, "bounds": self.bounds(s)}
         if op in ("screen.bounds", "screen.require"):
             if self.fail_bounds:
                 raise _Reply(502, {"error": NOT_DONE})

@@ -357,7 +357,8 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
         """Take a screenshot of the phone. Use it to understand what is on screen when the text list is not enough. The image is usually smaller than the screen; the text before it says how to convert a point you see into screen coordinates. Do not reuse an old screenshot: the screen changes."""
         png, bounds = await _thread(phones(ctx).capture, device)
         data, size, mime = await _thread(screenshots.shrink, png, max_size, scale)
-        screen = (_point(bounds["w"]), _point(bounds["h"])) if bounds and bounds.get("w") else screenshots.image_size(png)
+        # The image says which way up the screen is; the bounds only how big it is.
+        screen = screenshots.screen_size(screenshots.image_size(png), bounds)
         note = screenshots.describe_mapping(size, screen) or f"Screenshot is {size[0]}x{size[1]}."
         return [TextContent(type="text", text=note), Image(data=data, format=mime.split("/")[1]).to_image_content()]
 
