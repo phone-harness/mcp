@@ -212,11 +212,13 @@ Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you
 | `phone_swipe_on_screen` | Swipe. `direction` is the way the finger moves (`up` reveals what is below). From `x`, `y` or the center, for `distance` pixels or 40% of the screen. |
 | `phone_type_keys` | Type `text` into the focused field. `submit` presses Enter. |
 | `phone_press_button` | `HOME`, `BACK` (Android only), `APP_SWITCHER`, or `ENTER`. |
+| `phone_wake` | Wake a cloud iPhone that is asleep, on its lock screen, or showing the StandBy clock, and get it past the lock screen. Cloud iPhones are set up with no passcode, so nothing is typed. iPhone only. |
+| `phone_open_url` | Open an https link in the iPhone's browser, whole, with no typing. `url` must start with `https://`, have no spaces, and be at most 4096 characters. iPhone only; the phone has to be awake. |
 | `phone_list_apps` | Installed apps: package ids on Android, bundle ids on an iPhone, when the phone can list them. |
 | `phone_launch_app` | Open an app by the name on its icon, or on Android by package id. |
 | `phone_get_foreground_app` | Which app is in front, when the phone reports it. |
 
-There is no tool that opens a URL. A local stdio server also registers `phone_save_screenshot` (write a PNG or JPEG on that machine). Tool names follow [mobile-mcp](https://github.com/mobile-next/mobile-mcp).
+A cloud iPhone that has been left alone goes to sleep. Taps, typing and app launches are then refused until `phone_wake` is called, and the refusal says so. A local stdio server also registers `phone_save_screenshot` (write a PNG or JPEG on that machine). Tool names follow [mobile-mcp](https://github.com/mobile-next/mobile-mcp).
 
 ### Reserving a phone
 
