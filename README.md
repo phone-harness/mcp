@@ -204,7 +204,7 @@ Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you
 | `phone_list_available_devices` | Running phones and their ids, the phones the account can start, and the account balance when the API reports one. |
 | `phone_start_device` | Start a phone and wait until it is ready. With nothing named, a temporary Android emulator starts. `platform` and `kind` go together (`android`/`emulator`, or `ios`/`device` for the account's iPhone). `device_id` picks a particular iPhone or a saved Android phone (apps and logins kept). |
 | `phone_stop_device` | End the session. Anything not saved on the phone is lost. Stopping cloud Android stops the per-minute charge. |
-| `phone_get_screen_size` | Screen size in the coordinate space taps and swipes use. |
+| `phone_get_screen_size` | Screen size in the coordinate space taps and swipes use. It changes when the phone is turned. |
 | `phone_take_screenshot` | JPEG of the screen. Long side at most `max_size` (default 1024), or `scale`. The text before the image converts a point in the image to screen coordinates. |
 | `phone_list_elements_on_screen` | Visible text with tap-ready centers (`text` or `json`). Accessibility tree on Android; text recognition on iPhone. |
 | `phone_click_on_screen_at_coordinates` | Tap `x`, `y`. |

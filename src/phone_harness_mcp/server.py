@@ -347,7 +347,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     @server.tool(name="phone_get_screen_size", title="Screen size", annotations=READ_ONLY)
     async def get_screen_size(ctx: Context, device: str) -> str:
-        """The phone's screen size in the coordinate space the tap and swipe tools use."""
+        """The phone's screen size in the coordinate space the tap and swipe tools use. It changes when the phone is turned, so ask again after phone_set_orientation."""
         b = await _thread(phones(ctx).bounds, device)
         return f"Screen is {_point(b['w'])}x{_point(b['h'])}, origin top-left. Taps and swipes take these coordinates."
 

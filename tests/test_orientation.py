@@ -56,6 +56,12 @@ async def test_the_description_says_coordinates_go_stale(api):
     assert "An Android emulator cannot be turned from here" in text
 
 
+async def test_the_screen_size_tool_says_the_size_changes_with_a_turn(api):
+    async with connected(stdio_server(api)) as s:
+        text = {t.name: t.description for t in (await s.list_tools()).tools}["phone_get_screen_size"]
+    assert "It changes when the phone is turned, so ask again after phone_set_orientation." in text
+
+
 def test_the_instructions_name_it_once_in_the_iphone_paragraph():
     paragraph = next(p for p in INSTRUCTIONS.split("\n\n") if TOOL in p)
     assert "phone_wake" in paragraph                    # the same paragraph, so the two branches stay one edit
