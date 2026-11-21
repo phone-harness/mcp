@@ -30,8 +30,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PUBLIC_OPS = ("screen.capture", "screen.bounds", "screen.require", "screen.text", "screen.text_pixels",
               "input.tap", "input.press", "input.drag", "input.scroll", "input.keys", "input.text",
               "nav.home", "nav.back", "nav.recents", "apps.launch", "apps.current", "apps.list", "tree",
-              # Admitted by name, not by a `device.` prefix: waking an iPhone, and handing it a link.
-              "device.wake", "url.open")
+              # Admitted by name, not by a `device.` prefix: waking an iPhone, turning it, and
+              # handing it a link.
+              "device.wake", "device.rotate", "url.open")
+ORIENTATIONS = ("portrait", "landscape_left", "landscape_right")
 # What the phone's host will not do while an iPhone shows its lock screen
 # (phone-host, `OPS`). Looking at the screen and pressing Home are not here.
 GATED = ("screen.require", "input.tap", "input.press", "input.drag", "input.scroll", "input.keys", "input.text",
@@ -160,6 +162,9 @@ class FakeCloud:
         self.old_host = ()            # ops an iPhone's host does not have yet
         self.wake_answers = UNSET     # set: what `device.wake` answers, in place of the state it left
         self.not_served = ()          # ops this API's route does not serve yet: an API from before them
+        self.app_turns = True         # False: the app in front supports one way up, and stays that way
+        self.rotate_answers = UNSET   # set: what `device.rotate` answers, in place of the orientation reached
+        self.fail_bounds = False      # True: the phone does not answer when asked its screen size
 
     # --- lifecycle --------------------------------------------------------------
 
@@ -353,7 +358,7 @@ class FakeCloud:
     def unsupported(self, s):
         if s["platform"] == "ios":
             return {"nav.back", "apps.list", "tree"} | set(self.old_host)
-        return {"nav.back", "device.wake", "url.open"}      # the Android worker has neither
+        return {"nav.back", "device.wake", "device.rotate", "url.open"}      # the Android worker has none of these
 
     def run_op(self, s, body):
         if s["state"] != "ready":
@@ -381,6 +386,8 @@ class FakeCloud:
             raise _Reply(400, {"error": "device.wake did not accept those arguments"})
         if op == "url.open" and not self.good_url(kw):
             raise _Reply(400, {"error": "url.open did not accept those arguments"})
+        if op == "device.rotate" and (set(kw) != {"to"} or kw["to"] not in ORIENTATIONS):
+            raise _Reply(400, {"error": "device.rotate did not accept those arguments"})
         if s["id"] in self.locked and op in GATED:
             if self.locked_code:
                 raise _Reply(409, {"error": HOST_LOCKED, "code": "locked"})
@@ -394,11 +401,25 @@ class FakeCloud:
         return (set(kw) == {"url"} and isinstance(url, str) and url.startswith("https://")
                 and len(url) <= URL_MAX and all(33 <= ord(c) <= 126 for c in url))
 
+    def bounds(self, s):
+        """The screen's size: on its side once the phone is turned, when the app in front turns with it."""
+        b = dict(BOUNDS)
+        if s.get("orientation", "portrait") != "portrait" and self.app_turns:
+            b["w"], b["h"] = BOUNDS["h"], BOUNDS["w"]
+        return b
+
     def answer(self, s, op, kw):
         if op == "screen.capture":
-            return {"png_b64": self._png, "bounds": dict(BOUNDS)}
+            return {"png_b64": self._png, "bounds": self.bounds(s)}
         if op in ("screen.bounds", "screen.require"):
-            return dict(BOUNDS)
+            if self.fail_bounds:
+                raise _Reply(502, {"error": NOT_DONE})
+            return self.bounds(s)
+        if op == "device.rotate":
+            s["orientation"] = kw["to"]
+            if self.rotate_answers is not UNSET:
+                return self.rotate_answers
+            return {"orientation": kw["to"]}
         if op in ("screen.text", "screen.text_pixels"):
             return [dict(b) for b in TEXT]
         if op == "tree":

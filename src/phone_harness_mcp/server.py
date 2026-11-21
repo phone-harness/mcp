@@ -31,14 +31,15 @@ Start with phone_list_available_devices. If a phone is running, pass its id as `
 
 To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked.
 
-A cloud iPhone that has been left alone can be asleep (a black screenshot), on its lock screen or showing the StandBy clock. Taps, typing and app launches then do nothing or are refused. phone_wake brings it back. These phones are set up with no passcode, so never ask the user for one. phone_open_url opens an https link in an iPhone's browser whole, with no typing: use it for a long link or a sign-in link.
+A cloud iPhone that has been left alone can be asleep (a black screenshot), on its lock screen or showing the StandBy clock. Taps, typing and app launches then do nothing or are refused. phone_wake brings it back. These phones are set up with no passcode, so never ask the user for one. phone_open_url opens an https link in an iPhone's browser whole, with no typing: use it for a long link or a sign-in link. phone_set_orientation turns an iPhone to portrait or to either landscape; the screen size and every coordinate change with it, so read the screen again afterwards.
 
 An account that has no cloud iPhone yet, or needs more of them, reserves them with a $20 per phone refundable deposit. phone_reserve returns a quote, which is authoritative, and a Stripe Checkout link. Reservations are for iPhones only (with or without eSIM). Cloud Android emulators are on the $20 plan and are not reserved. The iPhone prices above are the standard ones: a customer's first phone is at the intro price, so tell the user what the quote from phone_reserve says, not a price from memory. Give the link to the user: only a person can pay it, no tool here pays, and nothing is reserved until they do. Places in the queue go in the order deposits were paid, and nothing moves one up. phone_list_reservations shows each reservation's status and place; the website has no list of reservations, so that tool is the list. phone_cancel_reservation gives a place up, and the deposit still held goes back automatically to the card that paid; it needs confirm=true, which is the user's yes, so ask first. When a phone is handed over, its deposit becomes a credit on the first bill and is no longer refundable. An account can have five unpaid reservations an hour, and cancelling one does not free a place."""
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 TOUCH = ToolAnnotations(read_only_hint=False, destructive_hint=False)
-# Waking a phone that is already awake changes nothing, so it is safe to repeat.
-WAKE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True)
+# Waking a phone that is awake, or turning one the way it already is, changes
+# nothing: both are safe to repeat.
+REPEATABLE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True)
 
 BUTTONS = {
     "HOME": ("nav.home", {}),
@@ -71,6 +72,17 @@ NO_LINK = (
     ("This phone cannot be handed a link. Launch its browser with phone_launch_app, tap the address bar, and "
      "type the address with phone_type_keys."),
 )
+
+NO_TURN = (
+    "This phone is an Android emulator, which cannot be turned from here. Its screen stays the way it is.",
+    "This iPhone cannot be turned from here yet. Its screen stays the way it is.",
+    "This phone cannot be turned from here. Its screen stays the way it is.",
+)
+# The ways up a phone can be asked to be. The two landscapes are different
+# answers: iOS's landscapeLeft and landscapeRight.
+Orientation = Literal["portrait", "landscape_left", "landscape_right"]
+STALE = ("Everything read before the turn is stale: take a new screenshot or list the elements on screen before "
+         "the next tap.")
 
 URL_MAX = 4096          # the limit the phone's host keeps; a signed storage link is under half of it
 
@@ -108,6 +120,35 @@ def checked_url(url) -> str:
         raise PhoneError("url must be one line of plain ASCII with no spaces. Percent-encode anything else "
                          "(a space is %20).")
     return link
+
+
+def _size(value) -> tuple[int, int] | None:
+    """(w, h) from an object that carries a screen size, or None."""
+    if not isinstance(value, dict):
+        return None
+    w, h = value.get("w"), value.get("h")
+    if all(isinstance(n, (int, float)) and not isinstance(n, bool) and n > 0 for n in (w, h)):
+        return _point(w), _point(h)
+    return None
+
+
+def _turned(asked: str, result, size: tuple[int, int] | None) -> str:
+    """What turning the phone came to, as a sentence. `result` is the phone's
+    answer to `device.rotate` and `size` the screen's size after it. A phone can
+    be turned and the app in front still not turn with it, so the size is what
+    says whether anything on screen moved."""
+    got = result.get("orientation") if isinstance(result, dict) else None
+    if isinstance(got, str) and got.strip().lower() != asked:
+        raise PhoneError(f"The phone did not turn to {asked}: it reports {got.strip().lower()}. Call "
+                         "phone_set_orientation once more, then take a screenshot to see which way up it is.")
+    if size is None:
+        return f"Turned the phone to {asked}. {STALE}"
+    w, h = size
+    if (w > h) != (asked != "portrait"):
+        return (f"The phone is turned to {asked}, but what is on screen did not turn with it and is still "
+                f"{w}x{h}. An app that supports only one way up stays that way: open one that turns, or carry "
+                "on with the screen as it is.")
+    return f"Turned the phone to {asked}. The screen is now {w}x{h}. {STALE}"
 
 
 def _woke(result) -> str:
@@ -413,7 +454,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     # --- waking it, and handing it a link -----------------------------------------
 
-    @server.tool(name="phone_wake", title="Wake the phone", annotations=WAKE)
+    @server.tool(name="phone_wake", title="Wake the phone", annotations=REPEATABLE)
     async def wake(ctx: Context, device: str) -> str:
         """Wake a cloud iPhone that is asleep, on its lock screen or showing the StandBy clock, and get it past the lock screen. Cloud iPhones are set up with no passcode, so nothing is typed: never ask the user for a code. Call it when a screenshot is black or shows a lock screen or a clock where the Home Screen should be, or when a tap, typing or an app launch is refused because the phone is locked. It does nothing to a phone that is already awake. Then read the screen again: the phone may be on its Home Screen. An Android emulator has no such control."""
         ph = phones(ctx)
@@ -433,6 +474,22 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
         except Unsupported:
             raise PhoneError(_cannot(await _thread(ph.platform, device), *NO_LINK)) from None
         return "Opened the link in the phone's browser. Give the page a moment to load, then read the screen."
+
+    @server.tool(name="phone_set_orientation", title="Turn the screen", annotations=REPEATABLE)
+    async def set_orientation(ctx: Context, device: str, orientation: Orientation) -> str:
+        """Turn a cloud iPhone to portrait, landscape_left or landscape_right, as if it had been turned in the hand. The phone lies flat in a rack, so this is the only way its screen turns. The two landscapes are the two ways round. An app that supports only one way up stays that way. The screen size and every coordinate change with the turn: the result gives the new size, and anything read before it is stale, so take a new screenshot or list the elements again before the next tap. An Android emulator cannot be turned from here."""
+        ph = phones(ctx)
+        try:
+            result = await _thread(ph.op, device, "device.rotate", to=orientation)
+        except Unsupported:
+            raise PhoneError(_cannot(await _thread(ph.platform, device), *NO_TURN)) from None
+        size = _size(result) or _size(result.get("bounds") if isinstance(result, dict) else None)
+        if size is None:
+            try:
+                size = _size(await _thread(ph.bounds, device))
+            except PhoneError:
+                size = None         # the turn happened; only its size is unknown
+        return _turned(orientation, result, size)
 
     # --- apps -------------------------------------------------------------------
 
