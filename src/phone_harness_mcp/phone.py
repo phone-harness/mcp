@@ -35,10 +35,12 @@ MAYBE_ASLEEP = ("If the iPhone is asleep, on its lock screen or showing the Stan
 # Lock. The host says which with a code (`orientation_locked`); the API's 502
 # does not, so a 502 from a turn names both.
 UPRIGHT_CODE = "orientation_locked"
-LOCKED_UPRIGHT = ("Portrait Orientation Lock is on, so the phone did not turn. It stays upright until that lock is "
-                  "turned off in Control Center.")
-MAYBE_LOCKED_UPRIGHT = ("If Portrait Orientation Lock is on, the phone stays upright until that lock is turned off "
-                        "in Control Center.")
+# No tool here turns that lock off, and the phone's Control Center does not
+# open from these touches, so the sentence does not send a model looking.
+LOCKED_UPRIGHT = ("Portrait Orientation Lock is on, so the phone did not turn. It stays upright while that lock is "
+                  "on, and no tool here turns it off: tell the user.")
+MAYBE_LOCKED_UPRIGHT = ("If Portrait Orientation Lock is on, the phone stays upright while it is, and no tool here "
+                        "turns it off: tell the user.")
 
 
 def needs_awake(op: str) -> bool:

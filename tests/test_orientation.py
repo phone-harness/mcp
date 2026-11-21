@@ -273,7 +273,9 @@ async def test_a_502_from_a_turn_names_both_things_that_stop_one(api):
     want = failed(f"Phone Harness Cloud answered 502: {NOT_DONE} {MAYBE_ASLEEP} {MAYBE_LOCKED_UPRIGHT}")
     assert upright.is_error and text_of(upright) == want
     assert asleep.is_error and text_of(asleep) == want
-    assert "phone_wake" in want and "Portrait Orientation Lock" in want and "Control Center" in want
+    assert "phone_wake" in want and "Portrait Orientation Lock" in want and "tell the user" in want
+    # Control Center does not open from these touches, so no sentence sends a model there.
+    assert "Control Center" not in want
 
 
 async def test_an_api_that_passes_the_hosts_code_on_says_which(api):
@@ -287,7 +289,7 @@ async def test_an_api_that_passes_the_hosts_code_on_says_which(api):
         asleep = await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
     assert upright.is_error and text_of(upright) == failed(LOCKED_UPRIGHT)
     assert asleep.is_error and text_of(asleep) == failed(LOCKED)
-    assert "turned off in Control Center" in LOCKED_UPRIGHT
+    assert "no tool here turns it off: tell the user" in LOCKED_UPRIGHT and "Control Center" not in LOCKED_UPRIGHT
 
 
 async def test_portrait_orientation_lock_does_not_stop_a_turn_to_where_the_phone_is(api):
