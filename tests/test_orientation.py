@@ -10,10 +10,17 @@ from pathlib import Path
 import pytest
 
 from fake_api import BOUNDS
+from phone_harness_mcp import server
 from phone_harness_mcp.server import INSTRUCTIONS, NO_TURN, STALE
 from support import connected, stdio_server, text_of
 
 pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    """A turn that has not been drawn yet is waited for. Not in a test."""
+    monkeypatch.setattr(server, "TURN_SETTLE", 0)
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOL = "phone_set_orientation"
@@ -51,6 +58,7 @@ async def test_the_description_says_coordinates_go_stale(api):
         text = {t.name: t.description for t in (await s.list_tools()).tools}[TOOL]
     assert "portrait, landscape_left or landscape_right" in text
     assert "screen size and every coordinate change with the turn" in text
+    assert "measured from a fresh screenshot" in text
     assert "take a new screenshot or list the elements again before the next tap" in text
     assert "An app that supports only one way up stays that way" in text
     assert "An Android emulator cannot be turned from here" in text
@@ -76,6 +84,7 @@ def test_the_docs_list_it():
     assert f"`{TOOL}`" in (ROOT / "CHANGELOG.md").read_text().split("## 0.1.0")[0]
     hosting = (ROOT / "docs" / "self-hosting.md").read_text()
     assert f"`{TOOL}`" in hosting and "`device.rotate` with `to`" in hosting
+    assert "takes a screenshot and measures the screen from it" in hosting
 
 
 # --- turning ----------------------------------------------------------------------
@@ -87,8 +96,29 @@ async def test_each_way_up_is_one_op_and_the_answer_gives_the_new_size(api, to, 
         r = await s.call_tool(TOOL, {"device": sid, "orientation": to})
     assert not r.is_error
     assert text_of(r) == f"Turned the phone to {to}. The screen is now {size}. {STALE}"
-    # The turn, then the size: a tap mapped against the old size would miss.
-    assert ops(api) == [("device.rotate", {"to": to}), ("screen.bounds", {})]
+    # The turn, then a screenshot to measure it by: the size the API reports can be an old one.
+    assert ops(api)[0] == ("device.rotate", {"to": to})
+    assert {op for op, _kw in ops(api)[1:]} == {"screen.capture"}
+
+
+@pytest.mark.parametrize("to,size", [("landscape_left", WIDE), ("landscape_right", WIDE), ("portrait", TALL)])
+async def test_the_size_is_right_when_the_api_still_reports_the_one_the_session_started_with(api, to, size):
+    """phone-host records the screen's size once, when the session becomes ready. The screenshot turns anyway."""
+    api.stale_bounds = True
+    async with connected(stdio_server(api)) as s:
+        sid = api.running("ios")
+        r = await s.call_tool(TOOL, {"device": sid, "orientation": to})
+    assert text_of(r) == f"Turned the phone to {to}. The screen is now {size}. {STALE}"
+
+
+@pytest.mark.parametrize("lag,captures", [(0, 1), (1, 2)])
+async def test_a_turn_still_being_drawn_is_looked_at_once_more(api, lag, captures):
+    api.turn_lag = lag
+    async with connected(stdio_server(api)) as s:
+        sid = api.running("ios")
+        r = await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
+    assert text_of(r) == f"Turned the phone to landscape_left. The screen is now {WIDE}. {STALE}"
+    assert [op for op, _kw in ops(api)] == ["device.rotate"] + ["screen.capture"] * captures
 
 
 async def test_the_two_landscapes_are_sent_as_different_words(api):
@@ -131,6 +161,7 @@ async def test_an_app_that_does_not_turn_is_said_plainly(api):
                           f"is still {TALL}. An app that supports only one way up stays that way: open one that "
                           "turns, or carry on with the screen as it is.")
     assert STALE not in text_of(r)
+    assert [op for op, _kw in ops(api)] == ["device.rotate", "screen.capture", "screen.capture"]   # looked twice, no more
 
 
 async def test_turning_it_the_way_it_already_is_says_the_same_thing_twice(api):
@@ -180,7 +211,7 @@ async def test_a_phone_that_says_it_is_another_way_up_did_not_turn(api):
 async def test_a_turn_whose_size_cannot_be_read_is_still_a_turn(api):
     async with connected(stdio_server(api)) as s:
         sid = api.running("ios")
-        api.fail_bounds = True
+        api.fail_capture = True
         r = await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
     assert not r.is_error
     assert text_of(r) == f"Turned the phone to landscape_left. {STALE}"

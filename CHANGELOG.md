@@ -4,8 +4,9 @@
 
 - `phone_set_orientation` turns a cloud iPhone to `portrait`, `landscape_left`
   or `landscape_right`. A cloud iPhone lies flat in a rack, so this is the
-  only way its screen turns. The result gives the screen's new size and says
-  that everything read before the turn is stale. When the app in front
+  only way its screen turns. The result gives the screen's new size, measured
+  from a fresh screenshot, and says that everything read before the turn is
+  stale. When the app in front
   supports only one way up, the result says the screen did not turn with the
   phone. On an Android emulator, and against an API or a phone host that does
   not have the op yet, it says the screen stays as it is.

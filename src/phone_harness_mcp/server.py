@@ -83,6 +83,7 @@ NO_TURN = (
 Orientation = Literal["portrait", "landscape_left", "landscape_right"]
 STALE = ("Everything read before the turn is stale: take a new screenshot or list the elements on screen before "
          "the next tap.")
+TURN_SETTLE = 0.7       # seconds a turning screen is given before it is looked at a second time
 
 URL_MAX = 4096          # the limit the phone's host keeps; a signed storage link is under half of it
 
@@ -130,6 +131,18 @@ def _size(value) -> tuple[int, int] | None:
     if all(isinstance(n, (int, float)) and not isinstance(n, bool) and n > 0 for n in (w, h)):
         return _point(w), _point(h)
     return None
+
+
+async def _screen_now(ph: Phones, device: str) -> tuple[int, int] | None:
+    """The screen's size as a fresh screenshot shows it, or None when there is
+    none to be had. A screenshot, because the size the API reports can be the
+    one the session started with. Taking one also shows the phone's host how
+    the screen is drawn now, which is what it reads the next tap against."""
+    try:
+        png, bounds = await _thread(ph.capture, device)
+        return screenshots.screen_size(await _thread(screenshots.image_size, png), bounds)
+    except (PhoneError, OSError, ValueError):
+        return None
 
 
 def _turned(asked: str, result, size: tuple[int, int] | None) -> str:
@@ -478,7 +491,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     @server.tool(name="phone_set_orientation", title="Turn the screen", annotations=REPEATABLE)
     async def set_orientation(ctx: Context, device: str, orientation: Orientation) -> str:
-        """Turn a cloud iPhone to portrait, landscape_left or landscape_right, as if it had been turned in the hand. The phone lies flat in a rack, so this is the only way its screen turns. The two landscapes are the two ways round. An app that supports only one way up stays that way. The screen size and every coordinate change with the turn: the result gives the new size, and anything read before it is stale, so take a new screenshot or list the elements again before the next tap. An Android emulator cannot be turned from here."""
+        """Turn a cloud iPhone to portrait, landscape_left or landscape_right, as if it had been turned in the hand. The phone lies flat in a rack, so this is the only way its screen turns. The two landscapes are the two ways round. An app that supports only one way up stays that way. The screen size and every coordinate change with the turn: the result gives the new size, measured from a fresh screenshot, and anything read before it is stale, so take a new screenshot or list the elements again before the next tap. An Android emulator cannot be turned from here."""
         ph = phones(ctx)
         try:
             result = await _thread(ph.op, device, "device.rotate", to=orientation)
@@ -486,10 +499,12 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
             raise PhoneError(_cannot(await _thread(ph.platform, device), *NO_TURN)) from None
         size = _size(result) or _size(result.get("bounds") if isinstance(result, dict) else None)
         if size is None:
-            try:
-                size = _size(await _thread(ph.bounds, device))
-            except PhoneError:
-                size = None         # the turn happened; only its size is unknown
+            size = await _screen_now(ph, device)
+            if size is not None and (size[0] > size[1]) != (orientation != "portrait"):
+                # A turn takes a moment to draw. Look once more before saying
+                # that what is on screen did not turn.
+                await anyio.sleep(TURN_SETTLE)
+                size = await _screen_now(ph, device) or size
         return _turned(orientation, result, size)
 
     # --- apps -------------------------------------------------------------------

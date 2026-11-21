@@ -168,6 +168,8 @@ class FakeCloud:
         self.app_turns = True         # False: the app in front supports one way up, and stays that way
         self.rotate_answers = UNSET   # set: what `device.rotate` answers, in place of the orientation reached
         self.fail_bounds = False      # True: the phone does not answer when asked its screen size
+        self.fail_capture = False     # True: the phone does not answer when asked for a screenshot
+        self.turn_lag = 0             # how many screenshots after a turn still show the old way up
 
     # --- lifecycle --------------------------------------------------------------
 
@@ -407,7 +409,8 @@ class FakeCloud:
     def landscape(self, s):
         """Is the screen on its side? A landscape app is (`turned`), and so is a
         phone that was turned, when the app in front turns with it."""
-        return s["id"] in self.turned or (s.get("orientation", "portrait") != "portrait" and self.app_turns)
+        shown = s.get("was", "portrait") if s.get("lag", 0) > 0 else s.get("orientation", "portrait")
+        return s["id"] in self.turned or (shown != "portrait" and self.app_turns)
 
     def bounds(self, s):
         """The screen's size as the API reports it. phone-host keeps the size the
@@ -419,13 +422,17 @@ class FakeCloud:
 
     def answer(self, s, op, kw):
         if op == "screen.capture":
-            return {"png_b64": self._png_wide if self.landscape(s) else self._png, "bounds": self.bounds(s)}
+            if self.fail_capture:
+                raise _Reply(502, {"error": NOT_DONE})
+            shot = {"png_b64": self._png_wide if self.landscape(s) else self._png, "bounds": self.bounds(s)}
+            s["lag"] = max(0, s.get("lag", 0) - 1)          # a turn still being drawn is one screenshot nearer
+            return shot
         if op in ("screen.bounds", "screen.require"):
             if self.fail_bounds:
                 raise _Reply(502, {"error": NOT_DONE})
             return self.bounds(s)
         if op == "device.rotate":
-            s["orientation"] = kw["to"]
+            s["was"], s["orientation"], s["lag"] = s.get("orientation", "portrait"), kw["to"], self.turn_lag
             if self.rotate_answers is not UNSET:
                 return self.rotate_answers
             return {"orientation": kw["to"]}
