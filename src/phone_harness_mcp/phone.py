@@ -31,13 +31,21 @@ LOCKED = ("The iPhone is locked or asleep. Call phone_wake, then try again. A cl
 NOT_SERVED = "op must be one of:"
 MAYBE_ASLEEP = ("If the iPhone is asleep, on its lock screen or showing the StandBy clock (a screenshot shows "
                 "which), call phone_wake and try again.")
+# Turning a phone has a second refusal of its own: iOS's Portrait Orientation
+# Lock. The host says which with a code (`orientation_locked`); the API's 502
+# does not, so a 502 from a turn names both.
+UPRIGHT_CODE = "orientation_locked"
+LOCKED_UPRIGHT = ("Portrait Orientation Lock is on, so the phone did not turn. It stays upright until that lock is "
+                  "turned off in Control Center.")
+MAYBE_LOCKED_UPRIGHT = ("If Portrait Orientation Lock is on, the phone stays upright until that lock is turned off "
+                        "in Control Center.")
 
 
 def needs_awake(op: str) -> bool:
     """Does the phone's host refuse this op while an iPhone shows its lock screen?
-    Touching the screen, typing, the app switcher, launching an app and opening
-    a link: yes. Looking at the screen and pressing Home: no."""
-    return op.startswith("input.") or op in ("nav.recents", "apps.launch", "url.open")
+    Touching the screen, typing, the app switcher, launching an app, opening a
+    link and turning the phone: yes. Looking at the screen and pressing Home: no."""
+    return op.startswith("input.") or op in ("nav.recents", "apps.launch", "url.open", "device.rotate")
 
 
 class PhoneError(ToolError):
@@ -146,7 +154,8 @@ class Phones:
                 if e.status == 502 and needs_awake(op) and self.platform(sid) == "ios":
                     # The API does not say why the phone did not do it. A locked
                     # iPhone is one reason, and the one a tool here can fix.
-                    error = PhoneError(f"{error} {MAYBE_ASLEEP}")
+                    error = PhoneError(f"{error} {MAYBE_ASLEEP}"
+                                       + (f" {MAYBE_LOCKED_UPRIGHT}" if op == "device.rotate" else ""))
                 raise error from None
             except (NotSignedIn, Unreachable) as e:
                 raise PhoneError(str(e)) from None
@@ -191,6 +200,8 @@ class Phones:
             return Unsupported(e.error)
         if e.status == 409 and e.code == LOCKED_CODE:
             return Locked(LOCKED)
+        if e.status == 409 and e.code == UPRIGHT_CODE:
+            return PhoneError(LOCKED_UPRIGHT)
         if e.status in (400, 403, 404, 409, 410, 413):
             text = e.error
             if e.code and e.code not in text:

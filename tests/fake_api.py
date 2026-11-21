@@ -37,7 +37,8 @@ ORIENTATIONS = ("portrait", "landscape_left", "landscape_right")
 # What the phone's host will not do while an iPhone shows its lock screen
 # (phone-host, `OPS`). Looking at the screen and pressing Home are not here.
 GATED = ("screen.require", "input.tap", "input.press", "input.drag", "input.scroll", "input.keys", "input.text",
-         "nav.recents", "apps.launch", "url.open")
+         "nav.recents", "apps.launch", "url.open", "device.rotate")
+HOST_UPRIGHT = "OrientationLocked: Portrait Orientation Lock is on: the phone did not turn"
 HOST_LOCKED = "The iPhone is locked. Unlock it on the phone, then retry; the host never enters a passcode."
 NOT_DONE = "The phone did not complete that operation."
 URL_MAX = 4096
@@ -170,6 +171,7 @@ class FakeCloud:
         self.fail_bounds = False      # True: the phone does not answer when asked its screen size
         self.fail_capture = False     # True: the phone does not answer when asked for a screenshot
         self.turn_lag = 0             # how many screenshots after a turn still show the old way up
+        self.orientation_lock = False  # True: iOS's Portrait Orientation Lock is on, and the phone will not turn
 
     # --- lifecycle --------------------------------------------------------------
 
@@ -397,6 +399,11 @@ class FakeCloud:
             if self.locked_code:
                 raise _Reply(409, {"error": HOST_LOCKED, "code": "locked"})
             raise _Reply(502, {"error": NOT_DONE})
+        if op == "device.rotate" and self.orientation_lock and kw["to"] != s.get("orientation", "portrait"):
+            # The host says 409 `orientation_locked`; the route passes that on, or answers its plain 502.
+            if self.locked_code:
+                raise _Reply(409, {"error": HOST_UPRIGHT, "code": "orientation_locked"})
+            raise _Reply(502, {"error": NOT_DONE})
         return 200, {"result": self.answer(s, op, kw)}, None
 
     @staticmethod
@@ -432,10 +439,16 @@ class FakeCloud:
                 raise _Reply(502, {"error": NOT_DONE})
             return self.bounds(s)
         if op == "device.rotate":
-            s["was"], s["orientation"], s["lag"] = s.get("orientation", "portrait"), kw["to"], self.turn_lag
+            # phone-host's answer: how the phone is held now, how what is on screen is
+            # drawn (an app that supports one way up stays upright), and how many
+            # quarter turns it took.
+            was = s.get("orientation", "portrait")
+            s["was"], s["orientation"], s["lag"] = was, kw["to"], self.turn_lag
             if self.rotate_answers is not UNSET:
                 return self.rotate_answers
-            return {"orientation": kw["to"]}
+            sides = {"landscape_left", "landscape_right"}
+            return {"device": kw["to"], "orientation": kw["to"] if self.app_turns else "portrait",
+                    "turned": 0 if was == kw["to"] else 2 if {was, kw["to"]} == sides else 1}
         if op in ("screen.text", "screen.text_pixels"):
             return [dict(b) for b in TEXT]
         if op == "tree":

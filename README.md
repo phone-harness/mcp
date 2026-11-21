@@ -214,7 +214,7 @@ Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you
 | `phone_press_button` | `HOME`, `BACK` (Android only), `APP_SWITCHER`, or `ENTER`. |
 | `phone_wake` | Wake a cloud iPhone that is asleep, on its lock screen, or showing the StandBy clock, and get it past the lock screen. Cloud iPhones are set up with no passcode, so nothing is typed. iPhone only. |
 | `phone_open_url` | Open an https link in the iPhone's browser, whole, with no typing. `url` must start with `https://`, have no spaces, and be at most 4096 characters. iPhone only; the phone has to be awake. |
-| `phone_set_orientation` | Turn a cloud iPhone to `portrait`, `landscape_left` or `landscape_right`. The result gives the new screen size; coordinates read before the turn are stale. An app that supports only one way up stays that way. iPhone only. |
+| `phone_set_orientation` | Turn a cloud iPhone to `portrait`, `landscape_left` or `landscape_right`. The result gives the new screen size; coordinates read before the turn are stale. An app that supports only one way up stays that way. The phone has to be awake and iOS's Portrait Orientation Lock off. iPhone only. |
 | `phone_list_apps` | Installed apps: package ids on Android, bundle ids on an iPhone, when the phone can list them. |
 | `phone_launch_app` | Open an app by the name on its icon, or on Android by package id. |
 | `phone_get_foreground_app` | Which app is in front, when the phone reports it. |

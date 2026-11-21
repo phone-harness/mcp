@@ -145,23 +145,39 @@ async def _screen_now(ph: Phones, device: str) -> tuple[int, int] | None:
         return None
 
 
+def _way_up(value) -> str | None:
+    """One of a phone's ways up, as the host words it, or None."""
+    word = value.strip().lower() if isinstance(value, str) else ""
+    return word if word in ("portrait", "portrait_upside_down", "landscape_left", "landscape_right") else None
+
+
 def _turned(asked: str, result, size: tuple[int, int] | None) -> str:
     """What turning the phone came to, as a sentence. `result` is the phone's
-    answer to `device.rotate` and `size` the screen's size after it. A phone can
-    be turned and the app in front still not turn with it, so the size is what
-    says whether anything on screen moved."""
-    got = result.get("orientation") if isinstance(result, dict) else None
-    if isinstance(got, str) and got.strip().lower() != asked:
-        raise PhoneError(f"The phone did not turn to {asked}: it reports {got.strip().lower()}. Call "
-                         "phone_set_orientation once more, then take a screenshot to see which way up it is.")
-    if size is None:
+    answer to `device.rotate`: {device, orientation, turned}, where `device` is
+    how the phone is held now and `orientation` how what is on screen is drawn.
+    `size` is the screen's size afterwards. A phone can be turned and the app in
+    front still not turn with it (the Home Screen of a small iPhone stays
+    upright), so how the screen is drawn, not how the phone is held, says
+    whether anything on it moved."""
+    report = result if isinstance(result, dict) else {}
+    held, drawn = _way_up(report.get("device")), _way_up(report.get("orientation"))
+    if held and held != asked:
+        raise PhoneError(f"The phone did not turn to {asked}: it is held {held}. Call phone_set_orientation once "
+                         "more, then take a screenshot to see which way up it is.")
+    wide = None
+    if size is not None:
+        wide = size[0] > size[1]
+    elif drawn:
+        wide = drawn.startswith("landscape")
+    if wide is None:
         return f"Turned the phone to {asked}. {STALE}"
-    w, h = size
-    if (w > h) != (asked != "portrait"):
-        return (f"The phone is turned to {asked}, but what is on screen did not turn with it and is still "
-                f"{w}x{h}. An app that supports only one way up stays that way: open one that turns, or carry "
-                "on with the screen as it is.")
-    return f"Turned the phone to {asked}. The screen is now {w}x{h}. {STALE}"
+    if wide != (asked != "portrait"):
+        still = f" and is still {size[0]}x{size[1]}" if size else ""
+        return (f"The phone is turned to {asked}, but what is on screen did not turn with it{still}. An app that "
+                "supports only one way up stays that way: open one that turns, or carry on with the screen as it "
+                "is.")
+    now = f" The screen is now {size[0]}x{size[1]}." if size else ""
+    return f"Turned the phone to {asked}.{now} {STALE}"
 
 
 def _woke(result) -> str:
@@ -491,18 +507,31 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     @server.tool(name="phone_set_orientation", title="Turn the screen", annotations=REPEATABLE)
     async def set_orientation(ctx: Context, device: str, orientation: Orientation) -> str:
-        """Turn a cloud iPhone to portrait, landscape_left or landscape_right, as if it had been turned in the hand. The phone lies flat in a rack, so this is the only way its screen turns. The two landscapes are the two ways round. An app that supports only one way up stays that way. The screen size and every coordinate change with the turn: the result gives the new size, measured from a fresh screenshot, and anything read before it is stale, so take a new screenshot or list the elements again before the next tap. An Android emulator cannot be turned from here."""
+        """Turn a cloud iPhone to portrait, landscape_left or landscape_right, as if it had been turned in the hand. The phone lies flat in a rack, so this is the only way its screen turns. The two landscapes are the two ways round. An app that supports only one way up stays that way. The screen size and every coordinate change with the turn: the result gives the new size, and anything read before it is stale, so take a new screenshot or list the elements again before the next tap. The phone has to be awake, and iOS's Portrait Orientation Lock has to be off: with it on the phone stays upright. An Android emulator cannot be turned from here."""
         ph = phones(ctx)
         try:
             result = await _thread(ph.op, device, "device.rotate", to=orientation)
         except Unsupported:
             raise PhoneError(_cannot(await _thread(ph.platform, device), *NO_TURN)) from None
-        size = _size(result) or _size(result.get("bounds") if isinstance(result, dict) else None)
-        if size is None:
+        report = result if isinstance(result, dict) else {}
+        size = _size(report) or _size(report.get("bounds"))
+        drawn = _way_up(report.get("orientation"))
+        if size is None and drawn:
+            # The host has looked at the screen and says how it is drawn. The
+            # size the API reports can be the one the session started with, so
+            # it is turned the way the host says the screen is.
+            try:
+                w, h = _size(await _thread(ph.bounds, device)) or (0, 0)
+            except PhoneError:
+                w = h = 0           # the turn happened; only its size is unknown
+            if w and h:
+                size = (max(w, h), min(w, h)) if drawn.startswith("landscape") else (min(w, h), max(w, h))
+        elif size is None:
+            # A host that does not say: measure it from a screenshot. A turn
+            # takes a moment to draw, so look once more before saying that
+            # what is on screen did not turn.
             size = await _screen_now(ph, device)
             if size is not None and (size[0] > size[1]) != (orientation != "portrait"):
-                # A turn takes a moment to draw. Look once more before saying
-                # that what is on screen did not turn.
                 await anyio.sleep(TURN_SETTLE)
                 size = await _screen_now(ph, device) or size
         return _turned(orientation, result, size)
