@@ -30,12 +30,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PUBLIC_OPS = ("screen.capture", "screen.bounds", "screen.require", "screen.text", "screen.text_pixels",
               "input.tap", "input.press", "input.drag", "input.scroll", "input.keys", "input.text",
               "nav.home", "nav.back", "nav.recents", "apps.launch", "apps.current", "apps.list", "tree",
-              # Admitted by name, not by a `device.` prefix: waking an iPhone, and handing it a link.
-              "device.wake", "url.open")
+              # Admitted by name, not by a `device.` prefix: waking an iPhone, turning it, and
+              # handing it a link.
+              "device.wake", "device.rotate", "url.open")
+ORIENTATIONS = ("portrait", "landscape_left", "landscape_right")
 # What the phone's host will not do while an iPhone shows its lock screen
 # (phone-host, `OPS`). Looking at the screen and pressing Home are not here.
 GATED = ("screen.require", "input.tap", "input.press", "input.drag", "input.scroll", "input.keys", "input.text",
-         "nav.recents", "apps.launch", "url.open")
+         "nav.recents", "apps.launch", "url.open", "device.rotate")
 HOST_LOCKED = "The iPhone is locked. Unlock it on the phone, then retry; the host never enters a passcode."
 NOT_DONE = "The phone did not complete that operation."
 URL_MAX = 4096
@@ -141,6 +143,9 @@ class FakeCloud:
         self.outage_times = 0   # the next N ops answer 503
         self.lock = threading.Lock()
         self._png = base64.b64encode(solid_png(*CAPTURE_SIZE)).decode()
+        self._png_wide = base64.b64encode(solid_png(CAPTURE_SIZE[1], CAPTURE_SIZE[0])).decode()
+        self.turned = set()           # ids of sessions whose screen is on its side: a landscape app, a turned phone
+        self.stale_bounds = False     # True: the size reported is the one the session started with, turned or not
         self._n = 0
         self._server = None
         self._thread = None
@@ -160,6 +165,13 @@ class FakeCloud:
         self.old_host = ()            # ops an iPhone's host does not have yet
         self.wake_answers = UNSET     # set: what `device.wake` answers, in place of the state it left
         self.not_served = ()          # ops this API's route does not serve yet: an API from before them
+        self.app_turns = True         # False: the app in front supports one way up, and stays that way
+        self.rotate_answers = UNSET   # set: what `device.rotate` answers, in place of the orientation reached
+        self.fail_bounds = False      # True: the phone does not answer when asked its screen size
+        self.fail_capture = False     # True: the phone does not answer when asked for a screenshot
+        self.turn_lag = 0             # how many screenshots after a turn still show the old way up
+        self.upright_lock = set()     # ids of sessions whose iPhone has Portrait Orientation Lock on
+        self.home_turns = False       # True: a large iPhone, whose Home Screen turns with the phone
 
     # --- lifecycle --------------------------------------------------------------
 
@@ -353,7 +365,7 @@ class FakeCloud:
     def unsupported(self, s):
         if s["platform"] == "ios":
             return {"nav.back", "apps.list", "tree"} | set(self.old_host)
-        return {"nav.back", "device.wake", "url.open"}      # the Android worker has neither
+        return {"nav.back", "device.wake", "device.rotate", "url.open"}      # the Android worker has none of these
 
     def run_op(self, s, body):
         if s["state"] != "ready":
@@ -381,6 +393,8 @@ class FakeCloud:
             raise _Reply(400, {"error": "device.wake did not accept those arguments"})
         if op == "url.open" and not self.good_url(kw):
             raise _Reply(400, {"error": "url.open did not accept those arguments"})
+        if op == "device.rotate" and (set(kw) != {"to"} or kw["to"] not in ORIENTATIONS):
+            raise _Reply(400, {"error": "device.rotate did not accept those arguments"})
         if s["id"] in self.locked and op in GATED:
             if self.locked_code:
                 raise _Reply(409, {"error": HOST_LOCKED, "code": "locked"})
@@ -394,11 +408,63 @@ class FakeCloud:
         return (set(kw) == {"url"} and isinstance(url, str) and url.startswith("https://")
                 and len(url) <= URL_MAX and all(33 <= ord(c) <= 126 for c in url))
 
+    def landscape(self, s):
+        """Is the screen on its side? A landscape app is (`turned`), and so is a
+        phone that was turned, when the app in front turns with it."""
+        shown = s.get("was", "portrait") if s.get("lag", 0) > 0 else s.get("orientation", "portrait")
+        return s["id"] in self.turned or (shown != "portrait" and self.shows_turned(s))
+
+    def shows_turned(self, s):
+        """Does what is on screen turn with the phone? An app that supports it does.
+        The Home Screen of a small iPhone does not, and that is where a turn that
+        had to change Portrait Orientation Lock leaves the phone."""
+        return self.app_turns and not (s.get("home") and not self.home_turns)
+
+    def bounds(self, s):
+        """The screen's size as the API reports it. phone-host keeps the size the
+        session started with (`stale_bounds`); the screenshot itself always turns."""
+        b = dict(BOUNDS)
+        if self.landscape(s) and not self.stale_bounds:
+            b["w"], b["h"] = BOUNDS["h"], BOUNDS["w"]
+        return b
+
     def answer(self, s, op, kw):
         if op == "screen.capture":
-            return {"png_b64": self._png, "bounds": dict(BOUNDS)}
+            if self.fail_capture:
+                raise _Reply(502, {"error": NOT_DONE})
+            shot = {"png_b64": self._png_wide if self.landscape(s) else self._png, "bounds": self.bounds(s)}
+            s["lag"] = max(0, s.get("lag", 0) - 1)          # a turn still being drawn is one screenshot nearer
+            return shot
         if op in ("screen.bounds", "screen.require"):
-            return dict(BOUNDS)
+            if self.fail_bounds:
+                raise _Reply(502, {"error": NOT_DONE})
+            return self.bounds(s)
+        if op == "device.rotate":
+            # phone-host's answer: how the phone is held now, how what is on screen is
+            # drawn (an app that supports one way up stays upright), how many quarter
+            # turns it took, and what it did to Portrait Orientation Lock.
+            #
+            # A phone with the lock on does not turn, so the host turns the lock
+            # off first ("off"), through Settings, which ends on the Home Screen,
+            # and notes that it did. The lock then stays off. The next turn to
+            # portrait puts it back ("on"), only when that note is there. `lock`
+            # is None when the call left the lock as it was.
+            was = s.get("orientation", "portrait")
+            lock = None
+            if s["id"] in self.upright_lock and kw["to"] != was:
+                self.upright_lock.discard(s["id"])
+                lock, s["unlocked_by_a_turn"] = "off", True
+            if kw["to"] == "portrait" and s.get("unlocked_by_a_turn"):
+                self.upright_lock.add(s["id"])
+                lock, s["unlocked_by_a_turn"] = "on", False
+            if lock:
+                s["home"] = True                    # where changing the lock leaves the phone
+            s["was"], s["orientation"], s["lag"] = was, kw["to"], self.turn_lag
+            if self.rotate_answers is not UNSET:
+                return self.rotate_answers
+            sides = {"landscape_left", "landscape_right"}
+            return {"device": kw["to"], "orientation": kw["to"] if self.shows_turned(s) else "portrait",
+                    "turned": 0 if was == kw["to"] else 2 if {was, kw["to"]} == sides else 1, "lock": lock}
         if op in ("screen.text", "screen.text_pixels"):
             return [dict(b) for b in TEXT]
         if op == "tree":
@@ -406,6 +472,7 @@ class FakeCloud:
         if op == "apps.launch":
             if not kw.get("name"):
                 raise _Reply(400, {"error": "apps.launch did not accept those arguments"})
+            s["home"] = False                       # an app is in front again
             return "com.example." + str(kw["name"]).lower()
         if op == "apps.current":
             if s["platform"] == "ios":      # the iPhone host's own wording for an op it has but cannot do

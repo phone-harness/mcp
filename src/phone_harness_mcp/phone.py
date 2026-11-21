@@ -18,6 +18,12 @@ from .cloud import Cloud, CloudError, NotSignedIn, Unreachable
 
 READY_WAIT = 240        # seconds to wait for a starting phone before giving it back, as the CLI does
 BUSY_WAIT = 12          # seconds of retrying a 409 "busy" before the model is told
+OP_WAIT = 90            # seconds the API is given to answer one op
+# A turn that has to change Portrait Orientation Lock goes through Settings
+# first: about 46 s on the phone it was measured on, where a plain turn takes a
+# second or two. The phone's host says to allow two minutes. Under the hosted
+# server's 300 s, with room for the op that reads the size afterwards.
+SLOW_OPS = {"device.rotate": 200}
 DEFAULT_MINUTES = 30
 
 # An iPhone on its lock screen. The phone's host refuses to touch it and says
@@ -31,13 +37,20 @@ LOCKED = ("The iPhone is locked or asleep. Call phone_wake, then try again. A cl
 NOT_SERVED = "op must be one of:"
 MAYBE_ASLEEP = ("If the iPhone is asleep, on its lock screen or showing the StandBy clock (a screenshot shows "
                 "which), call phone_wake and try again.")
+# A turn that did not come back may not have failed: one that has to change the
+# rotation lock takes longer than the API has waited for an op, and the phone's
+# host carries on. Asking again at once would start a second turn under the
+# first, so the sentence says to look first.
+MAYBE_STILL_TURNING = ("A turn that has to change the phone's rotation lock first takes about a minute and may "
+                       "still be going: wait a minute, then take a screenshot to see which way up the phone is "
+                       "before asking again.")
 
 
 def needs_awake(op: str) -> bool:
     """Does the phone's host refuse this op while an iPhone shows its lock screen?
-    Touching the screen, typing, the app switcher, launching an app and opening
-    a link: yes. Looking at the screen and pressing Home: no."""
-    return op.startswith("input.") or op in ("nav.recents", "apps.launch", "url.open")
+    Touching the screen, typing, the app switcher, launching an app, opening a
+    link and turning the phone: yes. Looking at the screen and pressing Home: no."""
+    return op.startswith("input.") or op in ("nav.recents", "apps.launch", "url.open", "device.rotate")
 
 
 class PhoneError(ToolError):
@@ -128,7 +141,8 @@ class Phones:
         retried_outage = False
         while True:
             try:
-                return self.cloud.request("POST", f"/sessions/{sid}/op", {"op": op, "kw": kw}, timeout=90)["result"]
+                return self.cloud.request("POST", f"/sessions/{sid}/op", {"op": op, "kw": kw},
+                                          timeout=SLOW_OPS.get(op, OP_WAIT))["result"]
             except CloudError as e:
                 if e.status == 409 and e.retry_after is not None and time.monotonic() < deadline:
                     time.sleep(min(max(e.retry_after, 0.2), 2))
@@ -146,7 +160,8 @@ class Phones:
                 if e.status == 502 and needs_awake(op) and self.platform(sid) == "ios":
                     # The API does not say why the phone did not do it. A locked
                     # iPhone is one reason, and the one a tool here can fix.
-                    error = PhoneError(f"{error} {MAYBE_ASLEEP}")
+                    error = PhoneError(f"{error} {MAYBE_ASLEEP}"
+                                       + (f" {MAYBE_STILL_TURNING}" if op == "device.rotate" else ""))
                 raise error from None
             except (NotSignedIn, Unreachable) as e:
                 raise PhoneError(str(e)) from None

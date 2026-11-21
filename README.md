@@ -204,7 +204,7 @@ Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you
 | `phone_list_available_devices` | Running phones and their ids, the phones the account can start, and the account balance when the API reports one. |
 | `phone_start_device` | Start a phone and wait until it is ready. With nothing named, a temporary Android emulator starts. `platform` and `kind` go together (`android`/`emulator`, or `ios`/`device` for the account's iPhone). `device_id` picks a particular iPhone or a saved Android phone (apps and logins kept). |
 | `phone_stop_device` | End the session. Anything not saved on the phone is lost. Stopping cloud Android stops the per-minute charge. |
-| `phone_get_screen_size` | Screen size in the coordinate space taps and swipes use. |
+| `phone_get_screen_size` | Screen size in the coordinate space taps and swipes use. It changes when the phone is turned. |
 | `phone_take_screenshot` | JPEG of the screen. Long side at most `max_size` (default 1024), or `scale`. The text before the image converts a point in the image to screen coordinates. |
 | `phone_list_elements_on_screen` | Visible text with tap-ready centers (`text` or `json`). Accessibility tree on Android; text recognition on iPhone. |
 | `phone_click_on_screen_at_coordinates` | Tap `x`, `y`. |
@@ -214,6 +214,7 @@ Cloud Android emulators are free to start, then 5¢ per phone-minute, pay as you
 | `phone_press_button` | `HOME`, `BACK` (Android only), `APP_SWITCHER`, or `ENTER`. |
 | `phone_wake` | Wake a cloud iPhone that is asleep, on its lock screen, or showing the StandBy clock, and get it past the lock screen. Cloud iPhones are set up with no passcode, so nothing is typed. iPhone only. |
 | `phone_open_url` | Open an https link in the iPhone's browser, whole, with no typing. `url` must start with `https://`, have no spaces, and be at most 4096 characters. iPhone only; the phone has to be awake. |
+| `phone_set_orientation` | Turn a cloud iPhone to `portrait`, `landscape_left` or `landscape_right`. The result gives the new screen size; coordinates read before the turn are stale. An app that supports only one way up stays that way. The phone has to be awake. If iOS's Portrait Orientation Lock is on, the turn switches it off first, which goes through Settings, takes about a minute and leaves the phone on its Home Screen; the lock then stays off until a turn back to portrait, which puts it on again. iPhone only. |
 | `phone_list_apps` | Installed apps: package ids on Android, bundle ids on an iPhone, when the phone can list them. |
 | `phone_launch_app` | Open an app by the name on its icon, or on Android by package id. |
 | `phone_get_foreground_app` | Which app is in front, when the phone reports it. |

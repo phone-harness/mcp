@@ -31,14 +31,15 @@ Start with phone_list_available_devices. If a phone is running, pass its id as `
 
 To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked.
 
-A cloud iPhone that has been left alone can be asleep (a black screenshot), on its lock screen or showing the StandBy clock. Taps, typing and app launches then do nothing or are refused. phone_wake brings it back. These phones are set up with no passcode, so never ask the user for one. phone_open_url opens an https link in an iPhone's browser whole, with no typing: use it for a long link or a sign-in link.
+A cloud iPhone that has been left alone can be asleep (a black screenshot), on its lock screen or showing the StandBy clock. Taps, typing and app launches then do nothing or are refused. phone_wake brings it back. These phones are set up with no passcode, so never ask the user for one. phone_open_url opens an https link in an iPhone's browser whole, with no typing: use it for a long link or a sign-in link. phone_set_orientation turns an iPhone to portrait or to either landscape; the screen size and every coordinate change with it, so read the screen again afterwards.
 
 An account that has no cloud iPhone yet, or needs more of them, reserves them with a $20 per phone refundable deposit. phone_reserve returns a quote, which is authoritative, and a Stripe Checkout link. Reservations are for iPhones only (with or without eSIM). Cloud Android emulators are on the $20 plan and are not reserved. The iPhone prices above are the standard ones: a customer's first phone is at the intro price, so tell the user what the quote from phone_reserve says, not a price from memory. Give the link to the user: only a person can pay it, no tool here pays, and nothing is reserved until they do. Places in the queue go in the order deposits were paid, and nothing moves one up. phone_list_reservations shows each reservation's status and place; the website has no list of reservations, so that tool is the list. phone_cancel_reservation gives a place up, and the deposit still held goes back automatically to the card that paid; it needs confirm=true, which is the user's yes, so ask first. When a phone is handed over, its deposit becomes a credit on the first bill and is no longer refundable. An account can have five unpaid reservations an hour, and cancelling one does not free a place."""
 
 READ_ONLY = ToolAnnotations(read_only_hint=True)
 TOUCH = ToolAnnotations(read_only_hint=False, destructive_hint=False)
-# Waking a phone that is already awake changes nothing, so it is safe to repeat.
-WAKE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True)
+# Waking a phone that is awake, or turning one the way it already is, changes
+# nothing: both are safe to repeat.
+REPEATABLE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True)
 
 BUTTONS = {
     "HOME": ("nav.home", {}),
@@ -71,6 +72,29 @@ NO_LINK = (
     ("This phone cannot be handed a link. Launch its browser with phone_launch_app, tap the address bar, and "
      "type the address with phone_type_keys."),
 )
+
+NO_TURN = (
+    "This phone is an Android emulator, which cannot be turned from here. Its screen stays the way it is.",
+    "This iPhone cannot be turned from here yet. Its screen stays the way it is.",
+    "This phone cannot be turned from here. Its screen stays the way it is.",
+)
+# The ways up a phone can be asked to be. The two landscapes are different
+# answers: iOS's landscapeLeft and landscapeRight.
+Orientation = Literal["portrait", "landscape_left", "landscape_right"]
+STALE = ("Everything read before the turn is stale: take a new screenshot or list the elements on screen before "
+         "the next tap.")
+TURN_SETTLE = 0.7       # seconds a turning screen is given before it is looked at a second time
+# A phone with iOS's Portrait Orientation Lock on does not turn, so the phone's
+# host turns the lock off before a turn, and says what it did in its answer's
+# `lock`: "off" when this call turned the lock off, "on" when it put it back,
+# nothing when it left the lock as it was. The lock stays off after a turn to a
+# landscape, and the next turn to portrait puts it back, if a turn was what
+# switched it off. The lock is only reached through Settings, so a call that
+# changes it ends on the Home Screen.
+LOCK_NOTES = {"off": ("Portrait Orientation Lock was on, so it was turned off first, and it stays off until a turn "
+                      "back to portrait."),
+              "on": "Portrait Orientation Lock, which a turn had switched off, is on again."}
+VIA_SETTINGS = "That went through Settings and left the phone on its Home Screen"
 
 URL_MAX = 4096          # the limit the phone's host keeps; a signed storage link is under half of it
 
@@ -108,6 +132,73 @@ def checked_url(url) -> str:
         raise PhoneError("url must be one line of plain ASCII with no spaces. Percent-encode anything else "
                          "(a space is %20).")
     return link
+
+
+def _size(value) -> tuple[int, int] | None:
+    """(w, h) from an object that carries a screen size, or None."""
+    if not isinstance(value, dict):
+        return None
+    w, h = value.get("w"), value.get("h")
+    if all(isinstance(n, (int, float)) and not isinstance(n, bool) and n > 0 for n in (w, h)):
+        return _point(w), _point(h)
+    return None
+
+
+async def _screen_now(ph: Phones, device: str) -> tuple[int, int] | None:
+    """The screen's size as a fresh screenshot shows it, or None when there is
+    none to be had. A screenshot, because the size the API reports can be the
+    one the session started with. Taking one also shows the phone's host how
+    the screen is drawn now, which is what it reads the next tap against."""
+    try:
+        png, bounds = await _thread(ph.capture, device)
+        return screenshots.screen_size(await _thread(screenshots.image_size, png), bounds)
+    except (PhoneError, OSError, ValueError):
+        return None
+
+
+def _way_up(value) -> str | None:
+    """One of a phone's ways up, as the host words it, or None."""
+    word = value.strip().lower() if isinstance(value, str) else ""
+    return word if word in ("portrait", "portrait_upside_down", "landscape_left", "landscape_right") else None
+
+
+def _turned(asked: str, result, size: tuple[int, int] | None) -> str:
+    """What turning the phone came to, as a sentence. `result` is the phone's
+    answer to `device.rotate`: {device, orientation, turned, lock}, where
+    `device` is how the phone is held now, `orientation` how what is on screen
+    is drawn, and `lock` what the turn did to Portrait Orientation Lock
+    (LOCK_NOTES). `size` is the screen's size afterwards. A phone can be turned and the app in
+    front still not turn with it (the Home Screen of a small iPhone stays
+    upright), so how the screen is drawn, not how the phone is held, says
+    whether anything on it moved."""
+    report = result if isinstance(result, dict) else {}
+    held, drawn = _way_up(report.get("device")), _way_up(report.get("orientation"))
+    if held and held != asked:
+        raise PhoneError(f"The phone did not turn to {asked}: it is held {held}. Call phone_set_orientation once "
+                         "more, then take a screenshot to see which way up it is.")
+    lock = report.get("lock")
+    note = LOCK_NOTES.get(lock.strip().lower()) if isinstance(lock, str) else None
+    wide = None
+    if size is not None:
+        wide = size[0] > size[1]
+    elif drawn:
+        wide = drawn.startswith("landscape")
+    if wide is not None and wide != (asked != "portrait"):
+        still = f" and is still {size[0]}x{size[1]}" if size else ""
+        if note:
+            # It is the Home Screen that did not turn: the lock was changed, and that ends there.
+            return (f"Turned the phone to {asked}. {note} {VIA_SETTINGS}, which did not turn with the phone"
+                    f"{still}: open the app again, and it is drawn the new way up if it supports that.")
+        return (f"The phone is turned to {asked}, but what is on screen did not turn with it{still}. An app that "
+                "supports only one way up stays that way: open one that turns, or carry on with the screen as it "
+                "is.")
+    parts = [f"Turned the phone to {asked}."]
+    if note:
+        parts.append(f"{note} {VIA_SETTINGS}: open the app again.")
+    if wide is not None and size:
+        parts.append(f"The screen is now {size[0]}x{size[1]}.")
+    parts.append(STALE)
+    return " ".join(parts)
 
 
 def _woke(result) -> str:
@@ -306,7 +397,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     @server.tool(name="phone_get_screen_size", title="Screen size", annotations=READ_ONLY)
     async def get_screen_size(ctx: Context, device: str) -> str:
-        """The phone's screen size in the coordinate space the tap and swipe tools use."""
+        """The phone's screen size in the coordinate space the tap and swipe tools use. It changes when the phone is turned, so ask again after phone_set_orientation."""
         b = await _thread(phones(ctx).bounds, device)
         return f"Screen is {_point(b['w'])}x{_point(b['h'])}, origin top-left. Taps and swipes take these coordinates."
 
@@ -316,7 +407,8 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
         """Take a screenshot of the phone. Use it to understand what is on screen when the text list is not enough. The image is usually smaller than the screen; the text before it says how to convert a point you see into screen coordinates. Do not reuse an old screenshot: the screen changes."""
         png, bounds = await _thread(phones(ctx).capture, device)
         data, size, mime = await _thread(screenshots.shrink, png, max_size, scale)
-        screen = (_point(bounds["w"]), _point(bounds["h"])) if bounds and bounds.get("w") else screenshots.image_size(png)
+        # The image says which way up the screen is; the bounds only how big it is.
+        screen = screenshots.screen_size(screenshots.image_size(png), bounds)
         note = screenshots.describe_mapping(size, screen) or f"Screenshot is {size[0]}x{size[1]}."
         return [TextContent(type="text", text=note), Image(data=data, format=mime.split("/")[1]).to_image_content()]
 
@@ -413,7 +505,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     # --- waking it, and handing it a link -----------------------------------------
 
-    @server.tool(name="phone_wake", title="Wake the phone", annotations=WAKE)
+    @server.tool(name="phone_wake", title="Wake the phone", annotations=REPEATABLE)
     async def wake(ctx: Context, device: str) -> str:
         """Wake a cloud iPhone that is asleep, on its lock screen or showing the StandBy clock, and get it past the lock screen. Cloud iPhones are set up with no passcode, so nothing is typed: never ask the user for a code. Call it when a screenshot is black or shows a lock screen or a clock where the Home Screen should be, or when a tap, typing or an app launch is refused because the phone is locked. It does nothing to a phone that is already awake. Then read the screen again: the phone may be on its Home Screen. An Android emulator has no such control."""
         ph = phones(ctx)
@@ -433,6 +525,37 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
         except Unsupported:
             raise PhoneError(_cannot(await _thread(ph.platform, device), *NO_LINK)) from None
         return "Opened the link in the phone's browser. Give the page a moment to load, then read the screen."
+
+    @server.tool(name="phone_set_orientation", title="Turn the screen", annotations=REPEATABLE)
+    async def set_orientation(ctx: Context, device: str, orientation: Orientation) -> str:
+        """Turn a cloud iPhone to portrait, landscape_left or landscape_right, as if it had been turned in the hand. The phone lies flat in a rack, so this is the only way its screen turns. The two landscapes are the two ways round. An app that supports only one way up stays that way. The screen size and every coordinate change with the turn: the result gives the new size, and anything read before it is stale, so take a new screenshot or list the elements again before the next tap. The phone has to be awake. If iOS's Portrait Orientation Lock is on, the turn switches it off first: that goes through Settings, takes about a minute, and leaves the phone on its Home Screen, so open the app again afterwards. The lock then stays off until a turn back to portrait, which puts it on again the same way. An Android emulator cannot be turned from here."""
+        ph = phones(ctx)
+        try:
+            result = await _thread(ph.op, device, "device.rotate", to=orientation)
+        except Unsupported:
+            raise PhoneError(_cannot(await _thread(ph.platform, device), *NO_TURN)) from None
+        report = result if isinstance(result, dict) else {}
+        size = _size(report) or _size(report.get("bounds"))
+        drawn = _way_up(report.get("orientation"))
+        if size is None and drawn:
+            # The host has looked at the screen and says how it is drawn. The
+            # size the API reports can be the one the session started with, so
+            # it is turned the way the host says the screen is.
+            try:
+                w, h = _size(await _thread(ph.bounds, device)) or (0, 0)
+            except PhoneError:
+                w = h = 0           # the turn happened; only its size is unknown
+            if w and h:
+                size = (max(w, h), min(w, h)) if drawn.startswith("landscape") else (min(w, h), max(w, h))
+        elif size is None:
+            # A host that does not say: measure it from a screenshot. A turn
+            # takes a moment to draw, so look once more before saying that
+            # what is on screen did not turn.
+            size = await _screen_now(ph, device)
+            if size is not None and (size[0] > size[1]) != (orientation != "portrait"):
+                await anyio.sleep(TURN_SETTLE)
+                size = await _screen_now(ph, device) or size
+        return _turned(orientation, result, size)
 
     # --- apps -------------------------------------------------------------------
 
