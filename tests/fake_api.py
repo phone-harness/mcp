@@ -125,6 +125,9 @@ class FakeCloud:
         self.outage_times = 0   # the next N ops answer 503
         self.lock = threading.Lock()
         self._png = base64.b64encode(solid_png(*CAPTURE_SIZE)).decode()
+        self._png_wide = base64.b64encode(solid_png(CAPTURE_SIZE[1], CAPTURE_SIZE[0])).decode()
+        self.turned = set()           # ids of sessions whose screen is on its side: a landscape app, a turned phone
+        self.stale_bounds = False     # True: the size reported is the one the session started with, turned or not
         self._n = 0
         self._server = None
         self._thread = None
@@ -339,11 +342,22 @@ class FakeCloud:
             raise _Reply(400, {"error": f"this phone cannot {op!r}", "unsupported": True})
         return 200, {"result": self.answer(s, op, kw)}, None
 
+    def landscape(self, s):
+        return s["id"] in self.turned
+
+    def bounds(self, s):
+        """The screen's size as the API reports it. phone-host keeps the size the
+        session started with (`stale_bounds`); the screenshot itself always turns."""
+        b = dict(BOUNDS)
+        if self.landscape(s) and not self.stale_bounds:
+            b["w"], b["h"] = BOUNDS["h"], BOUNDS["w"]
+        return b
+
     def answer(self, s, op, kw):
         if op == "screen.capture":
-            return {"png_b64": self._png, "bounds": dict(BOUNDS)}
+            return {"png_b64": self._png_wide if self.landscape(s) else self._png, "bounds": self.bounds(s)}
         if op in ("screen.bounds", "screen.require"):
-            return dict(BOUNDS)
+            return self.bounds(s)
         if op in ("screen.text", "screen.text_pixels"):
             return [dict(b) for b in TEXT]
         if op == "tree":

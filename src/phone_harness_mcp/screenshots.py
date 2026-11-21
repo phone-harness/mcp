@@ -20,6 +20,26 @@ def image_size(data: bytes) -> tuple[int, int]:
         return im.size
 
 
+def screen_size(image: tuple[int, int], bounds: dict | None) -> tuple[int, int]:
+    """The screen's size in tap coordinates, for a screenshot of size `image`.
+
+    The API reports the coordinate space as `bounds`. A screenshot is always
+    of the screen as it is now, and taps are read in the screenshot's own
+    orientation. A phone's host can go on reporting the size the screen had
+    when the session started after the screen has turned, so when the two
+    disagree about which side is the long one, the screenshot is right: the
+    bounds are turned to match it. With no usable bounds the screenshot's own
+    pixels are the space."""
+    w, h = (bounds or {}).get("w"), (bounds or {}).get("h")
+    if not all(isinstance(n, (int, float)) and not isinstance(n, bool) and n > 0 for n in (w, h)):
+        return image
+    w, h = round(w), round(h)
+    iw, ih = image
+    if (iw > ih and w < h) or (iw < ih and w > h):
+        return h, w
+    return w, h
+
+
 def shrink(png: bytes, max_size: int | None = DEFAULT_MAX_SIZE, scale: float | None = None,
            fmt: str = "JPEG") -> tuple[bytes, tuple[int, int], str]:
     """-> (bytes, (w, h), mime). `scale` wins over `max_size`; neither means the original size."""
