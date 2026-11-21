@@ -7,9 +7,12 @@
   only way its screen turns. The result gives the screen's new size and says
   that everything read before the turn is stale. When the app in front
   supports only one way up, the result says the screen did not turn with the
-  phone. A turn needs the phone awake and iOS's Portrait Orientation Lock off,
-  and a refused one says so. On an Android emulator, and against an API or a
-  phone host that does not have the op yet, it says the screen stays as it is.
+  phone. A turn needs the phone awake. When iOS's Portrait Orientation Lock is
+  on, the turn switches it off first, through Settings, which takes about a
+  minute and leaves the phone on its Home Screen; the result says so. The lock
+  then stays off until a turn back to portrait, which puts it on again. On an
+  Android emulator, and against an API or a phone host that does not have the
+  op yet, it says the screen stays as it is.
 - Two tools for a cloud iPhone: `phone_wake` and `phone_open_url`.
   `phone_wake` wakes a phone that is asleep, on its lock screen or showing the
   StandBy clock, and gets it past the lock screen. Cloud iPhones are set up

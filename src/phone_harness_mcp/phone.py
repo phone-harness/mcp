@@ -18,6 +18,11 @@ from .cloud import Cloud, CloudError, NotSignedIn, Unreachable
 
 READY_WAIT = 240        # seconds to wait for a starting phone before giving it back, as the CLI does
 BUSY_WAIT = 12          # seconds of retrying a 409 "busy" before the model is told
+OP_WAIT = 90            # seconds the API is given to answer one op
+# Turning a phone can go through Settings twice: to turn Portrait Orientation
+# Lock off before the turn, and to put it back after a turn to portrait. The
+# phone's host says about a minute each. Under the hosted server's 300 s.
+SLOW_OPS = {"device.rotate": 200}
 DEFAULT_MINUTES = 30
 
 # An iPhone on its lock screen. The phone's host refuses to touch it and says
@@ -31,16 +36,13 @@ LOCKED = ("The iPhone is locked or asleep. Call phone_wake, then try again. A cl
 NOT_SERVED = "op must be one of:"
 MAYBE_ASLEEP = ("If the iPhone is asleep, on its lock screen or showing the StandBy clock (a screenshot shows "
                 "which), call phone_wake and try again.")
-# Turning a phone has a second refusal of its own: iOS's Portrait Orientation
-# Lock. The host says which with a code (`orientation_locked`); the API's 502
-# does not, so a 502 from a turn names both.
-UPRIGHT_CODE = "orientation_locked"
-# No tool here turns that lock off, and the phone's Control Center does not
-# open from these touches, so the sentence does not send a model looking.
-LOCKED_UPRIGHT = ("Portrait Orientation Lock is on, so the phone did not turn. It stays upright while that lock is "
-                  "on, and no tool here turns it off: tell the user.")
-MAYBE_LOCKED_UPRIGHT = ("If Portrait Orientation Lock is on, the phone stays upright while it is, and no tool here "
-                        "turns it off: tell the user.")
+# A turn that did not come back may not have failed: one that has to change the
+# rotation lock takes longer than the API has waited for an op, and the phone's
+# host carries on. Asking again at once would start a second turn under the
+# first, so the sentence says to look first.
+MAYBE_STILL_TURNING = ("A turn that has to change the phone's rotation lock first takes a minute or two and may "
+                       "still be going: wait a minute, then take a screenshot to see which way up the phone is "
+                       "before asking again.")
 
 
 def needs_awake(op: str) -> bool:
@@ -138,7 +140,8 @@ class Phones:
         retried_outage = False
         while True:
             try:
-                return self.cloud.request("POST", f"/sessions/{sid}/op", {"op": op, "kw": kw}, timeout=90)["result"]
+                return self.cloud.request("POST", f"/sessions/{sid}/op", {"op": op, "kw": kw},
+                                          timeout=SLOW_OPS.get(op, OP_WAIT))["result"]
             except CloudError as e:
                 if e.status == 409 and e.retry_after is not None and time.monotonic() < deadline:
                     time.sleep(min(max(e.retry_after, 0.2), 2))
@@ -157,7 +160,7 @@ class Phones:
                     # The API does not say why the phone did not do it. A locked
                     # iPhone is one reason, and the one a tool here can fix.
                     error = PhoneError(f"{error} {MAYBE_ASLEEP}"
-                                       + (f" {MAYBE_LOCKED_UPRIGHT}" if op == "device.rotate" else ""))
+                                       + (f" {MAYBE_STILL_TURNING}" if op == "device.rotate" else ""))
                 raise error from None
             except (NotSignedIn, Unreachable) as e:
                 raise PhoneError(str(e)) from None
@@ -202,8 +205,6 @@ class Phones:
             return Unsupported(e.error)
         if e.status == 409 and e.code == LOCKED_CODE:
             return Locked(LOCKED)
-        if e.status == 409 and e.code == UPRIGHT_CODE:
-            return PhoneError(LOCKED_UPRIGHT)
         if e.status in (400, 403, 404, 409, 410, 413):
             text = e.error
             if e.code and e.code not in text:

@@ -84,6 +84,17 @@ Orientation = Literal["portrait", "landscape_left", "landscape_right"]
 STALE = ("Everything read before the turn is stale: take a new screenshot or list the elements on screen before "
          "the next tap.")
 TURN_SETTLE = 0.7       # seconds a turning screen is given before it is looked at a second time
+# A phone with iOS's Portrait Orientation Lock on does not turn, so the phone's
+# host turns the lock off before a turn, and says what it did in its answer's
+# `lock`: "off" when this call turned the lock off, "on" when it put it back,
+# nothing when it left the lock as it was. The lock stays off after a turn to a
+# landscape, and the next turn to portrait puts it back, if a turn was what
+# switched it off. The lock is only reached through Settings, so a call that
+# changes it ends on the Home Screen.
+LOCK_NOTES = {"off": ("Portrait Orientation Lock was on, so it was turned off first, and it stays off until a turn "
+                      "back to portrait."),
+              "on": "Portrait Orientation Lock, which a turn had switched off, is on again."}
+VIA_SETTINGS = "That went through Settings and left the phone on its Home Screen"
 
 URL_MAX = 4096          # the limit the phone's host keeps; a signed storage link is under half of it
 
@@ -153,9 +164,10 @@ def _way_up(value) -> str | None:
 
 def _turned(asked: str, result, size: tuple[int, int] | None) -> str:
     """What turning the phone came to, as a sentence. `result` is the phone's
-    answer to `device.rotate`: {device, orientation, turned}, where `device` is
-    how the phone is held now and `orientation` how what is on screen is drawn.
-    `size` is the screen's size afterwards. A phone can be turned and the app in
+    answer to `device.rotate`: {device, orientation, turned, lock}, where
+    `device` is how the phone is held now, `orientation` how what is on screen
+    is drawn, and `lock` what the turn did to Portrait Orientation Lock
+    (LOCK_NOTES). `size` is the screen's size afterwards. A phone can be turned and the app in
     front still not turn with it (the Home Screen of a small iPhone stays
     upright), so how the screen is drawn, not how the phone is held, says
     whether anything on it moved."""
@@ -164,20 +176,29 @@ def _turned(asked: str, result, size: tuple[int, int] | None) -> str:
     if held and held != asked:
         raise PhoneError(f"The phone did not turn to {asked}: it is held {held}. Call phone_set_orientation once "
                          "more, then take a screenshot to see which way up it is.")
+    lock = report.get("lock")
+    note = LOCK_NOTES.get(lock.strip().lower()) if isinstance(lock, str) else None
     wide = None
     if size is not None:
         wide = size[0] > size[1]
     elif drawn:
         wide = drawn.startswith("landscape")
-    if wide is None:
-        return f"Turned the phone to {asked}. {STALE}"
-    if wide != (asked != "portrait"):
+    if wide is not None and wide != (asked != "portrait"):
         still = f" and is still {size[0]}x{size[1]}" if size else ""
+        if note:
+            # It is the Home Screen that did not turn: the lock was changed, and that ends there.
+            return (f"Turned the phone to {asked}. {note} {VIA_SETTINGS}, which did not turn with the phone"
+                    f"{still}: open the app again, and it is drawn the new way up if it supports that.")
         return (f"The phone is turned to {asked}, but what is on screen did not turn with it{still}. An app that "
                 "supports only one way up stays that way: open one that turns, or carry on with the screen as it "
                 "is.")
-    now = f" The screen is now {size[0]}x{size[1]}." if size else ""
-    return f"Turned the phone to {asked}.{now} {STALE}"
+    parts = [f"Turned the phone to {asked}."]
+    if note:
+        parts.append(f"{note} {VIA_SETTINGS}: open the app again.")
+    if wide is not None and size:
+        parts.append(f"The screen is now {size[0]}x{size[1]}.")
+    parts.append(STALE)
+    return " ".join(parts)
 
 
 def _woke(result) -> str:
@@ -507,7 +528,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     @server.tool(name="phone_set_orientation", title="Turn the screen", annotations=REPEATABLE)
     async def set_orientation(ctx: Context, device: str, orientation: Orientation) -> str:
-        """Turn a cloud iPhone to portrait, landscape_left or landscape_right, as if it had been turned in the hand. The phone lies flat in a rack, so this is the only way its screen turns. The two landscapes are the two ways round. An app that supports only one way up stays that way. The screen size and every coordinate change with the turn: the result gives the new size, and anything read before it is stale, so take a new screenshot or list the elements again before the next tap. The phone has to be awake, and iOS's Portrait Orientation Lock has to be off: with it on the phone stays upright. An Android emulator cannot be turned from here."""
+        """Turn a cloud iPhone to portrait, landscape_left or landscape_right, as if it had been turned in the hand. The phone lies flat in a rack, so this is the only way its screen turns. The two landscapes are the two ways round. An app that supports only one way up stays that way. The screen size and every coordinate change with the turn: the result gives the new size, and anything read before it is stale, so take a new screenshot or list the elements again before the next tap. The phone has to be awake. If iOS's Portrait Orientation Lock is on, the turn switches it off first: that goes through Settings, takes about a minute, and leaves the phone on its Home Screen, so open the app again afterwards. The lock then stays off until a turn back to portrait, which puts it on again the same way. An Android emulator cannot be turned from here."""
         ph = phones(ctx)
         try:
             result = await _thread(ph.op, device, "device.rotate", to=orientation)

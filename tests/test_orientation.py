@@ -11,7 +11,8 @@ import pytest
 
 from fake_api import BOUNDS, NOT_DONE
 from phone_harness_mcp import server
-from phone_harness_mcp.phone import LOCKED, LOCKED_UPRIGHT, MAYBE_ASLEEP, MAYBE_LOCKED_UPRIGHT
+from phone_harness_mcp.cloud import Cloud
+from phone_harness_mcp.phone import LOCKED, MAYBE_ASLEEP, MAYBE_STILL_TURNING, OP_WAIT, SLOW_OPS
 from phone_harness_mcp.server import INSTRUCTIONS, NO_TURN, STALE
 from support import connected, stdio_server, text_of
 
@@ -60,7 +61,6 @@ async def test_the_description_says_coordinates_go_stale(api):
     assert "portrait, landscape_left or landscape_right" in text
     assert "screen size and every coordinate change with the turn" in text
     assert "The phone has to be awake" in text
-    assert "Portrait Orientation Lock has to be off: with it on the phone stays upright" in text
     assert "take a new screenshot or list the elements again before the next tap" in text
     assert "An app that supports only one way up stays that way" in text
     assert "An Android emulator cannot be turned from here" in text
@@ -257,55 +257,188 @@ async def test_a_turn_that_cannot_be_looked_at_is_still_a_turn(api):
     assert text_of(r) == f"Turned the phone to landscape_left. {STALE}"
 
 
-# --- a phone that will not turn ------------------------------------------------------
+# --- Portrait Orientation Lock ---------------------------------------------------------
 #
-# The host refuses a turn on a locked phone, and when iOS's Portrait Orientation
-# Lock is on. It says which with a code. The API's op route answers a plain 502.
+# A locked phone does not turn, so the phone's host turns iOS's Portrait
+# Orientation Lock off before a turn (it used to refuse). It does that through
+# Settings, which ends on the Home Screen, and says what it did in `lock`.
 
-async def test_a_502_from_a_turn_names_both_things_that_stop_one(api):
+def test_the_lock_is_never_spoken_of_as_a_refusal():
+    """Nothing here maps or mentions the old refusal: the turn deals with the lock itself."""
+    for name in ("phone.py", "server.py"):
+        text = (ROOT / "src" / "phone_harness_mcp" / name).read_text()
+        assert "orientation_locked" not in text, name
+        assert "Lock is on, so the phone did not turn" not in text and "stays upright" not in text, name
+    for doc in ("README.md", "docs/self-hosting.md", "CHANGELOG.md"):
+        text = " ".join((ROOT / doc).read_text().split())
+        assert "orientation_locked" not in text and "Lock off. iPhone only" not in text, doc
+        assert "Portrait Orientation Lock has to be off" not in text and "while iOS's Portrait Orientation Lock is on." \
+            not in text, doc
+
+
+async def test_the_description_says_the_turn_deals_with_the_lock_itself(api):
+    async with connected(stdio_server(api)) as s:
+        text = {t.name: t.description for t in (await s.list_tools()).tools}[TOOL]
+    assert "If iOS's Portrait Orientation Lock is on, the turn switches it off first" in text
+    assert "goes through Settings, takes about a minute, and leaves the phone on its Home Screen" in text
+    assert "open the app again afterwards" in text
+    # and whether it is put back
+    assert "The lock then stays off until a turn back to portrait, which puts it on again the same way." in text
+    assert "has to be off" not in text and "stays upright" not in text
+
+
+@pytest.mark.parametrize("to", ["landscape_left", "landscape_right"])
+async def test_a_turn_to_a_landscape_turns_the_lock_off_and_leaves_it_off(api, to):
     async with connected(stdio_server(api)) as s:
         sid = api.running("ios")
-        api.orientation_lock = True
-        upright = await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
-        api.orientation_lock = False
+        api.upright_lock.add(sid)
+        r = await s.call_tool(TOOL, {"device": sid, "orientation": to})
+    assert not r.is_error
+    # The lock was changed through Settings, which ends on the Home Screen, and that does not turn.
+    assert text_of(r) == (f"Turned the phone to {to}. Portrait Orientation Lock was on, so it was turned off first, "
+                          "and it stays off until a turn back to portrait. That went through Settings and left "
+                          f"the phone on its Home Screen, which did not turn with the phone and is still {TALL}: "
+                          "open the app again, and it is drawn the new way up if it supports that.")
+    assert sid not in api.upright_lock
+    assert [op for op, _kw in ops(api)] == ["device.rotate", "screen.bounds"]           # one turn, not two
+
+
+async def test_the_app_opened_again_is_drawn_the_new_way_up(api):
+    async with connected(stdio_server(api)) as s:
+        sid = api.running("ios")
+        api.upright_lock.add(sid)
+        await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
+        await s.call_tool("phone_launch_app", {"device": sid, "name": "Maps"})
+        size = text_of(await s.call_tool("phone_get_screen_size", {"device": sid}))
+        again = text_of(await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"}))
+    assert size.startswith(f"Screen is {WIDE}")
+    # The lock is off now, so asking again changes nothing and says nothing about it.
+    assert again == f"Turned the phone to landscape_left. The screen is now {WIDE}. {STALE}"
+
+
+async def test_on_a_phone_whose_home_screen_turns_the_new_size_is_given(api):
+    api.home_turns = True
+    async with connected(stdio_server(api)) as s:
+        sid = api.running("ios")
+        api.upright_lock.add(sid)
+        r = await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_right"})
+    assert text_of(r) == ("Turned the phone to landscape_right. Portrait Orientation Lock was on, so it was turned "
+                          "off first, and it stays off until a turn back to portrait. That went through Settings "
+                          f"and left the phone on its Home Screen: open the app again. The screen is now {WIDE}. "
+                          f"{STALE}")
+
+
+async def test_the_next_turn_to_portrait_puts_the_lock_back_and_says_so(api):
+    """Off for the first landscape, left alone for the second, back on for portrait, and only once."""
+    back = ("Turned the phone to portrait. Portrait Orientation Lock, which a turn had switched off, is on again. "
+            "That went through Settings and left the phone on its Home Screen: open the app again. "
+            f"The screen is now {TALL}. {STALE}")
+    async with connected(stdio_server(api)) as s:
+        sid = api.running("ios")
+        api.upright_lock.add(sid)
+        first = text_of(await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"}))
+        await s.call_tool("phone_launch_app", {"device": sid, "name": "Maps"})
+        second = text_of(await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_right"}))
+        assert sid not in api.upright_lock
+        third = text_of(await s.call_tool(TOOL, {"device": sid, "orientation": "portrait"}))
+        assert sid in api.upright_lock
+        fourth = text_of(await s.call_tool(TOOL, {"device": sid, "orientation": "portrait"}))
+    assert "it was turned off first" in first
+    assert second == f"Turned the phone to landscape_right. The screen is now {WIDE}. {STALE}"
+    assert third == back
+    assert fourth == f"Turned the phone to portrait. The screen is now {TALL}. {STALE}"
+
+
+async def test_a_lock_somebody_else_turned_off_is_not_put_back(api):
+    async with connected(stdio_server(api)) as s:
+        sid = api.running("ios")
+        await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})      # the lock was never on
+        r = await s.call_tool(TOOL, {"device": sid, "orientation": "portrait"})
+    assert text_of(r) == f"Turned the phone to portrait. The screen is now {TALL}. {STALE}"
+    assert sid not in api.upright_lock
+
+
+async def test_a_phone_with_the_lock_on_asked_for_portrait_is_left_as_it_is(api):
+    async with connected(stdio_server(api)) as s:
+        sid = api.running("ios")
+        api.upright_lock.add(sid)
+        r = await s.call_tool(TOOL, {"device": sid, "orientation": "portrait"})
+    assert text_of(r) == f"Turned the phone to portrait. The screen is now {TALL}. {STALE}"
+    assert sid in api.upright_lock
+
+
+@pytest.mark.parametrize("lock", [None, "", "unknown", 1, True])
+async def test_a_turn_that_did_not_touch_the_lock_says_nothing_about_it(api, lock):
+    api.rotate_answers = {"device": "landscape_left", "orientation": "landscape_left", "turned": 1, "lock": lock}
+    async with connected(stdio_server(api)) as s:
+        sid = api.running("ios")
+        r = await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
+    assert text_of(r) == f"Turned the phone to landscape_left. The screen is now {WIDE}. {STALE}"
+
+
+async def test_a_lock_change_is_reported_even_when_the_size_cannot_be_read(api):
+    api.fail_bounds = True
+    async with connected(stdio_server(api)) as s:
+        sid = api.running("ios")
+        api.upright_lock.add(sid)
+        r = await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
+    assert text_of(r) == ("Turned the phone to landscape_left. Portrait Orientation Lock was on, so it was turned off "
+                          "first, and it stays off until a turn back to portrait. That went through Settings and "
+                          "left the phone on its Home Screen, which did not turn with the phone: open the app "
+                          "again, and it is drawn the new way up if it supports that.")
+
+
+# --- a turn that does not come back --------------------------------------------------------
+#
+# The host refuses a turn on a locked phone, and the API's op route answers a
+# plain 502 for that. A turn that has to change the lock can also outlast the
+# API's wait while the host carries on, so a 502 says to look before asking again.
+
+async def test_a_502_from_a_turn_says_to_wake_and_to_look_before_asking_again(api):
+    async with connected(stdio_server(api)) as s:
+        sid = api.running("ios")
         api.locked.add(sid)
-        asleep = await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
-    want = failed(f"Phone Harness Cloud answered 502: {NOT_DONE} {MAYBE_ASLEEP} {MAYBE_LOCKED_UPRIGHT}")
-    assert upright.is_error and text_of(upright) == want
-    assert asleep.is_error and text_of(asleep) == want
-    assert "phone_wake" in want and "Portrait Orientation Lock" in want and "tell the user" in want
-    # Control Center does not open from these touches, so no sentence sends a model there.
-    assert "Control Center" not in want
+        r = await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
+    assert r.is_error
+    assert text_of(r) == failed(f"Phone Harness Cloud answered 502: {NOT_DONE} {MAYBE_ASLEEP} {MAYBE_STILL_TURNING}")
+    assert "phone_wake" in text_of(r) and "may still be going" in MAYBE_STILL_TURNING
+    assert "take a screenshot to see which way up the phone is before asking again" in MAYBE_STILL_TURNING
 
 
-async def test_an_api_that_passes_the_hosts_code_on_says_which(api):
+async def test_an_api_that_passes_locked_on_says_to_wake(api):
     api.locked_code = True
     async with connected(stdio_server(api)) as s:
         sid = api.running("ios")
-        api.orientation_lock = True
-        upright = await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
-        api.orientation_lock = False
         api.locked.add(sid)
-        asleep = await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
-    assert upright.is_error and text_of(upright) == failed(LOCKED_UPRIGHT)
-    assert asleep.is_error and text_of(asleep) == failed(LOCKED)
-    assert "no tool here turns it off: tell the user" in LOCKED_UPRIGHT and "Control Center" not in LOCKED_UPRIGHT
+        r = await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
+    assert r.is_error and text_of(r) == failed(LOCKED)
 
 
-async def test_portrait_orientation_lock_does_not_stop_a_turn_to_where_the_phone_is(api):
-    api.orientation_lock = True
-    async with connected(stdio_server(api)) as s:
-        sid = api.running("ios")
-        r = await s.call_tool(TOOL, {"device": sid, "orientation": "portrait"})
-    assert not r.is_error and text_of(r) == f"Turned the phone to portrait. The screen is now {TALL}. {STALE}"
-
-
-async def test_a_502_from_another_op_says_nothing_about_that_lock(api):
+async def test_a_502_from_another_op_says_nothing_about_a_turn(api):
     async with connected(stdio_server(api)) as s:
         sid = api.running("ios")
         api.locked.add(sid)
         r = await s.call_tool("phone_click_on_screen_at_coordinates", {"device": sid, "x": 1, "y": 2})
-    assert r.is_error and "phone_wake" in text_of(r) and "Portrait Orientation Lock" not in text_of(r)
+    assert r.is_error and "phone_wake" in text_of(r) and "may still be going" not in text_of(r)
+
+
+async def test_a_turn_is_waited_for_longer_than_any_other_op(api, monkeypatch):
+    """Changing the lock goes through Settings, and one call can do it twice: about a minute each."""
+    waits = {}
+    real = Cloud.request
+
+    def request(self, method, path, body=None, timeout=None, headers=None):
+        if isinstance(body, dict) and "op" in body:
+            waits[body["op"]] = timeout
+        return real(self, method, path, body, timeout, headers)
+    monkeypatch.setattr(Cloud, "request", request)
+    async with connected(stdio_server(api)) as s:
+        sid = api.running("ios")
+        await s.call_tool(TOOL, {"device": sid, "orientation": "landscape_left"})
+        await s.call_tool("phone_click_on_screen_at_coordinates", {"device": sid, "x": 1, "y": 2})
+    assert waits == {"device.rotate": 200, "screen.bounds": 90, "input.tap": 90}
+    assert SLOW_OPS == {"device.rotate": 200} and OP_WAIT == 90
+    assert max(SLOW_OPS.values()) + OP_WAIT < 300        # the hosted function is ended at 300 s
 
 
 # --- what is not a way up -------------------------------------------------------------
