@@ -6,10 +6,10 @@
   or `landscape_right`. A cloud iPhone lies flat in a rack, so this is the
   only way its screen turns. The result gives the screen's new size, measured
   from a fresh screenshot, and says that everything read before the turn is
-  stale. When the app in front
-  supports only one way up, the result says the screen did not turn with the
-  phone. On an Android emulator, and against an API or a phone host that does
-  not have the op yet, it says the screen stays as it is.
+  stale. When the app in front supports only one way up, the result says the
+  screen did not turn with the phone. On an Android emulator, and against an
+  API or a phone host that does not have the op yet, it says the screen stays
+  as it is.
 - Two tools for a cloud iPhone: `phone_wake` and `phone_open_url`.
   `phone_wake` wakes a phone that is asleep, on its lock screen or showing the
   StandBy clock, and gets it past the lock screen. Cloud iPhones are set up
@@ -20,6 +20,9 @@
   A tap, typing, an app launch or a link refused because the iPhone is locked
   now says to call `phone_wake`. On an Android emulator, and against an API or
   a phone host that does not have these yet, each tool says what to do instead.
+- The coordinate note under `phone_take_screenshot` follows a screen that is
+  on its side. A landscape screenshot was described as covering the portrait
+  size the session started with, so taps worked out from it missed.
 - Three tools to reserve an iPhone the account does not have yet:
   `phone_reserve`, `phone_list_reservations` and `phone_cancel_reservation`.
   Reservations are for iPhones only (with or without eSIM): `phone_type` is
