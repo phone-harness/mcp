@@ -23,6 +23,7 @@ EXPECTED_TOOLS |= {"phone_reserve", "phone_list_reservations", "phone_cancel_res
 EXPECTED_TOOLS |= {"phone_wake", "phone_open_url"}
 # Turning an iPhone that lies flat in a rack (PHO-337).
 EXPECTED_TOOLS |= {"phone_set_orientation"}
+EXPECTED_TOOLS |= {"phone_reset_input"}
 
 
 async def test_tool_names_follow_mobile_mcp(api):

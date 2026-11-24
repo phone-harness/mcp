@@ -28,7 +28,7 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PUBLIC_OPS = ("screen.capture", "screen.bounds", "screen.require", "screen.text", "screen.text_pixels",
-              "input.tap", "input.press", "input.drag", "input.scroll", "input.keys", "input.text",
+              "input.tap", "input.press", "input.drag", "input.scroll", "input.keys", "input.text", "input.reset",
               "nav.home", "nav.back", "nav.recents", "apps.launch", "apps.current", "apps.list", "tree",
               # Admitted by name, not by a `device.` prefix: waking an iPhone, turning it, and
               # handing it a link.
@@ -365,7 +365,7 @@ class FakeCloud:
     def unsupported(self, s):
         if s["platform"] == "ios":
             return {"nav.back", "apps.list", "tree"} | set(self.old_host)
-        return {"nav.back", "device.wake", "device.rotate", "url.open"}      # the Android worker has none of these
+        return {"nav.back", "device.wake", "device.rotate", "url.open", "input.reset"}  # absent on Android
 
     def run_op(self, s, body):
         if s["state"] != "ready":
@@ -389,8 +389,8 @@ class FakeCloud:
         if op in self.unsupported(s):
             raise _Reply(400, {"error": f"this phone cannot {op!r}", "unsupported": True})
         # The API checks an iPhone's arguments before the phone's host is asked.
-        if op == "device.wake" and kw:
-            raise _Reply(400, {"error": "device.wake did not accept those arguments"})
+        if op in ("device.wake", "input.reset") and kw:
+            raise _Reply(400, {"error": f"{op} did not accept those arguments"})
         if op == "url.open" and not self.good_url(kw):
             raise _Reply(400, {"error": "url.open did not accept those arguments"})
         if op == "device.rotate" and (set(kw) != {"to"} or kw["to"] not in ORIENTATIONS):
@@ -429,6 +429,10 @@ class FakeCloud:
         return b
 
     def answer(self, s, op, kw):
+        if op == "input.reset":
+            return getattr(self, "reset_answer", {
+                "ok": True, "reason": "manual", "detail": None, "attempts": 1,
+                "took_s": 0.2, "at": "2026-11-23T00:00:00Z", "surface_rematch": False, "rsd": True})
         if op == "screen.capture":
             if self.fail_capture:
                 raise _Reply(502, {"error": NOT_DONE})
