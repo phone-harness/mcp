@@ -621,4 +621,11 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
     if reservations:
         register_reservations(server, cloud_for)
 
+    # Each tool's title is also written into its annotations. Most clients read
+    # the tool's own `title`; Claude's connector directory reads
+    # `annotations.title` and flags a tool that lacks it.
+    for tool in server._tool_manager.list_tools():
+        if tool.title and tool.annotations is not None and not tool.annotations.title:
+            tool.annotations = tool.annotations.model_copy(update={"title": tool.title})
+
     return server

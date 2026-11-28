@@ -8,6 +8,8 @@
   prices in its instructions. `/mcp` is unchanged. `--drive-path` turns the
   second endpoint on for a self-hosted server; each endpoint is its own OAuth
   protected resource.
+- Every tool's title is also in its annotations (`annotations.title`), which
+  is where Claude's connector directory reads it.
 - Every tool now states `readOnlyHint`, `destructiveHint` and `openWorldHint`.
   `openWorldHint` is true for the tools that read or act on the phone's
   screen, and false for the ones that stay inside the account.

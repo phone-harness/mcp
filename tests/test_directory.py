@@ -90,6 +90,17 @@ async def test_every_tool_states_all_three_hints(api):
             assert a.destructive_hint is False, t.name
 
 
+async def test_every_tool_carries_its_title_in_the_annotations_too(api):
+    cloud = Cloud(StaticToken("pck_test"), api.url)
+    for server in (stdio_server(api), build_server(cloud_for=lambda ctx: cloud, allow_files=False, reservations=False)):
+        async with connected(server) as s:
+            tools = (await s.list_tools()).tools
+        assert tools
+        for t in tools:
+            assert t.title, t.name
+            assert t.annotations.title == t.title, t.name
+
+
 async def test_what_touches_the_screen_is_open_world(api):
     async with connected(stdio_server(api)) as s:
         by_name = {t.name: t.annotations for t in (await s.list_tools()).tools}
