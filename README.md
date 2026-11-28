@@ -235,6 +235,29 @@ An account with no cloud iPhone yet, or one that needs more of them, reserves th
 
 A reservation is `pending_payment` until the deposit is paid, then `queued` with a position. Places go in the order deposits were paid; nothing moves one up. A customer's first phone is at the intro price, once, and every other phone at the standard price. Cancelling refunds the deposit still held automatically, to the card that paid. The plan starts when a phone is handed over; the deposit comes off its first bill and is then no longer refundable. An account can have five unpaid reservations an hour, and cancelling one does not free a place. Until the API has reservations, each of these tools says so and changes nothing.
 
+## Organizations
+
+Every account is an organization of one. Its owner can invite teammates, who then share the organization's phones. Unless told otherwise, the tools act in your own organization, as they always have.
+
+An API key belongs to one organization, so a teammate can simply use a key made in the team's organization. Nothing else is needed.
+
+A client that signs in names the organization to act in with the `X-Phone-Harness-Org` header:
+
+```json
+{
+  "mcpServers": {
+    "phone-harness": {
+      "url": "https://mcp.phone-harness.com/mcp",
+      "headers": { "X-Phone-Harness-Org": "org_0123456789abcdef01234567" }
+    }
+  }
+}
+```
+
+A client that signs in with OAuth and cannot send a header acts in your own organization. A local stdio server reads the id from `PHONE_HARNESS_ORG` instead; see [docs/self-hosting.md](docs/self-hosting.md).
+
+An id is `org_` followed by 24 lowercase hex characters; `phone-harness cloud orgs` lists the ids of the organizations you are in. A header that is not one, or a request with two of them, fails the tool call before it sends anything. An organization you are not in is refused, and the tool says so. Some things are for the organization's owner or an admin, such as reserving a phone for it; a teammate without that role is told so.
+
 ## FAQ
 
 ### Can I use an API key instead of signing in?

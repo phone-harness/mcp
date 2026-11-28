@@ -13,11 +13,18 @@ Two kinds of credential:
   developer who already has the CLI set up gets the MCP for free. Its access
   token is refreshed through the CLI's own public OAuth client when it
   expires.
+
+A request acts in one organization. Every account is an organization of one,
+and the API uses the caller's own unless a request names another the caller is
+in, with `X-Phone-Harness-Org`. A `Cloud` made with `org` names it on every
+request, and one made without sends no such header. An API key is bound to
+its organization by the API and needs none.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -34,6 +41,10 @@ OAUTH_CLIENT_ID = "Fu2QHJcGewhL7uKh"
 USER_AGENT = f"phone-harness-mcp/{__version__}"
 SIGN_IN_HELP = ("Not signed in to Phone Harness Cloud. Set PHONE_HARNESS_API_KEY to an API key from "
                 "https://phone-harness.com/dashboard, or run `phone-harness cloud login`.")
+# The header that names the organization a request acts in, and an
+# organization's id as the API writes one.
+ORG_HEADER = "X-Phone-Harness-Org"
+ORG_ID = re.compile(r"org_[0-9a-f]{24}")
 
 
 def api_url() -> str:
@@ -78,6 +89,10 @@ class Unreachable(Exception):
 
 class NotSignedIn(Exception):
     """This machine has nothing to sign in with."""
+
+
+class NotAnOrganization(Exception):
+    """What was given as the organization to act in is not one organization's id."""
 
 
 class StaticToken:
@@ -173,17 +188,39 @@ def local_credentials(api_key: str | None = None):
     return CliLogin()
 
 
+def checked_org(value: str, where: str) -> str:
+    """`value`, if it is an organization's id: the check made before one is
+    forwarded, so that what the API is sent is an id or nothing. The sentence
+    names `where` the value came from and never the value itself, which may
+    be an API key put in the wrong place."""
+    if not ORG_ID.fullmatch(value):
+        raise NotAnOrganization(f"{where} must be an organization id: org_ followed by 24 lowercase hex "
+                                "characters. Leave it out to act in this sign-in's own organization.")
+    return value
+
+
+def local_org() -> str | None:
+    """The organization this machine acts in: PHONE_HARNESS_ORG, or None, its
+    sign-in's own, when that is unset or empty."""
+    value = (os.environ.get("PHONE_HARNESS_ORG") or "").strip()
+    return checked_org(value, "PHONE_HARNESS_ORG") if value else None
+
+
 class Cloud:
     """A signed-in HTTP client for the API. Synchronous; the server calls it from a worker thread."""
 
-    def __init__(self, credentials, url: str | None = None, timeout: float = 40):
+    def __init__(self, credentials, url: str | None = None, timeout: float = 40, *, org: str | None = None):
         self.credentials = credentials
         self.url = (url or api_url()).rstrip("/")
         self.timeout = timeout
+        # The organization every request names, already checked; None names
+        # none. It is only ever handed in, never read from the environment
+        # here, so a client made without one sends no such header.
+        self.org = org
 
     def request(self, method: str, path: str, body=None, timeout: float | None = None,
                 headers: dict | None = None) -> dict:
-        """`headers` adds to a request (an `Idempotency-Key`); it never replaces the bearer."""
+        """`headers` adds to a request (an `Idempotency-Key`); it never replaces the bearer or the organization."""
         token = self.credentials.token()
         try:
             return self._send(method, path, body, token, timeout, headers)
@@ -200,6 +237,8 @@ class Cloud:
     def _send(self, method, path, body, token, timeout, extra=None):
         headers = {**(extra or {}), "Authorization": f"Bearer {token}", "Accept": "application/json",
                    "User-Agent": USER_AGENT}
+        if self.org:
+            headers[ORG_HEADER] = self.org
         data = None
         if body is not None:
             headers["Content-Type"] = "application/json"

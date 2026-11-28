@@ -14,6 +14,12 @@ Two pieces:
 - `CloudTokenVerifier`: the SDK's `TokenVerifier` protocol, for OAuth mode. It
   asks the API `GET /me` with the bearer and caches the answer briefly. Scopes
   are not inspected here: the API is the policy.
+
+A request may also name the organization it acts in, with
+`X-Phone-Harness-Org`. That is a choice, not a credential: `org_of` reads it
+for the one tool call it came with, and the API says whether the caller is in
+that organization. The verifier never sends it, because whether a bearer is
+good does not depend on it.
 """
 from __future__ import annotations
 
@@ -25,25 +31,49 @@ from mcp.server.auth.provider import AccessToken
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 
-from .cloud import Cloud, CloudError, StaticToken, Unreachable
+from .cloud import ORG_HEADER, Cloud, CloudError, NotAnOrganization, StaticToken, Unreachable, checked_org
 
 CHALLENGE = 'Bearer realm="phone-harness"'
 HELP = "Send `Authorization: Bearer <Phone Harness API key>` with every request."
 
 
-def bearer_of(ctx) -> str | None:
-    """The bearer on the HTTP request behind this tool call; None over stdio."""
+def _headers(ctx):
+    """The headers of the HTTP request behind this tool call; None over stdio."""
     try:
         request = ctx.request_context.request
     except (AttributeError, ValueError):
         return None
-    headers = getattr(request, "headers", None)
+    return getattr(request, "headers", None)
+
+
+def bearer_of(ctx) -> str | None:
+    """The bearer on the HTTP request behind this tool call; None over stdio."""
+    headers = _headers(ctx)
     if headers is None:
         return None
     value = headers.get("authorization") or ""
     if not value.lower().startswith("bearer "):
         return None
     return value[7:].strip() or None
+
+
+def org_of(ctx) -> str | None:
+    """The organization the HTTP request behind this tool call names in
+    `X-Phone-Harness-Org`; None when it names none, and over stdio. It is read
+    from that one request each time, so nothing carries over to the next.
+
+    A request with two such headers, or one whose value is not an id, raises
+    `NotAnOrganization`: the choice is the caller's, and it is never guessed."""
+    headers = _headers(ctx)
+    if headers is None:
+        return None
+    values = headers.getlist(ORG_HEADER)
+    if not values:
+        return None
+    if len(values) > 1:
+        raise NotAnOrganization(f"This request has {len(values)} {ORG_HEADER} headers, and the server does not "
+                                "choose between them. Send one, or none to act in this sign-in's own organization.")
+    return checked_org(values[0].strip(), f"The {ORG_HEADER} header")
 
 
 class RequireBearer:
@@ -92,6 +122,8 @@ class CloudTokenVerifier:
         self._cache: dict[str, tuple[float, AccessToken | None]] = {}
 
     def _me(self, token: str) -> dict | None:
+        # Asked with no organization named, whatever the request names: the
+        # answer is remembered by the token alone.
         try:
             return Cloud(StaticToken(token), self.api_url).request("GET", "/me")
         except CloudError as e:

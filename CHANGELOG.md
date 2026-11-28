@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Organizations. Every account is an organization of one, and the teammates
+  its owner invites share its phones. A call acts in the caller's own
+  organization unless it names another, and the server passes that choice to
+  the API. Hosted, an `X-Phone-Harness-Org` header on a request goes with the
+  API calls made for that request and with no others. Over stdio,
+  `PHONE_HARNESS_ORG` is read once when the server starts. With neither,
+  nothing new is sent. An API key belongs to one organization and needs
+  neither.
+  An id is `org_` followed by 24 lowercase hex characters and is checked
+  first. Hosted, a header that is not one, or two of them, fails the tool
+  call before it sends anything; over stdio the server does not start. An
+  organization the sign-in is not in, and something only the organization's
+  owner or an admin may do, are each said in a plain sentence. No tool,
+  argument, title or annotation changed.
 - The hosted server has a second endpoint, `/chatgpt`, for ChatGPT's plugin
   directory, whose rules bar a plugin from selling subscriptions or linking to
   a checkout. It drives the same phones and has no reservation tools and no

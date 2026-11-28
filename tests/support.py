@@ -11,8 +11,8 @@ from phone_harness_mcp.cloud import Cloud, StaticToken
 from phone_harness_mcp.server import build_server
 
 
-def stdio_server(api, token="pck_test", allow_files=True):
-    cloud = Cloud(StaticToken(token), api.url)
+def stdio_server(api, token="pck_test", allow_files=True, org=None):
+    cloud = Cloud(StaticToken(token), api.url, org=org)
     return build_server(cloud_for=lambda ctx: cloud, allow_files=allow_files)
 
 

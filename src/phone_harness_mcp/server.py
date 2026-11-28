@@ -20,8 +20,8 @@ from mcp.server.mcpserver.utilities.types import Image
 from mcp.types import TextContent, ToolAnnotations
 
 from . import __version__, screenshots
-from .auth import bearer_of
-from .cloud import Cloud, StaticToken
+from .auth import bearer_of, org_of
+from .cloud import Cloud, NotAnOrganization, StaticToken
 from .phone import DEFAULT_MINUTES, READY_WAIT, PhoneError, Phones, Unsupported, describe, minutes_left
 from .reservations import register as register_reservations
 
@@ -240,19 +240,26 @@ def _woke(result) -> str:
     return ALREADY_AWAKE if report.get("woke") is False else AWAKE
 
 
-def stdio_cloud(credentials, url: str | None = None):
-    """One account for the whole process: this machine's own sign-in."""
-    cloud = Cloud(credentials, url)
+def stdio_cloud(credentials, url: str | None = None, org: str | None = None):
+    """One account for the whole process: this machine's own sign-in, acting in
+    `org`, or in its own organization when none is named."""
+    cloud = Cloud(credentials, url, org=org)
     return lambda ctx: cloud
 
 
 def hosted_cloud(url: str | None = None):
-    """Whoever is calling: the bearer on this HTTP request, and nothing else."""
+    """Whoever is calling: the bearer on this HTTP request, the organization it
+    names if it names one, and nothing else. Both are read again for each tool
+    call and kept for none."""
     def pick(ctx):
         token = bearer_of(ctx)
         if not token:
             raise PhoneError("This server needs `Authorization: Bearer <Phone Harness API key>` on every request.")
-        return Cloud(StaticToken(token), url)
+        try:
+            org = org_of(ctx)
+        except NotAnOrganization as e:
+            raise PhoneError(str(e)) from None
+        return Cloud(StaticToken(token), url, org=org)
     return pick
 
 
