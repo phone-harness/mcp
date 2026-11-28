@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "phone-harness",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Connect ChatGPT to a cloud phone on your Phone Harness account: a real iPhone or an Android emulator.",
   "author": {
     "name": "Phone Harness",
@@ -39,8 +39,8 @@
         "termsOfServiceURL": "https://phone-harness.com/terms",
         "defaultPrompt": [
           "Which phones do I have, and is one running?",
-          "Start my cloud phone and open Settings.",
-          "Open example.com on my phone and tell me what the page says."
+          "Start my cloud phone and tell me what is on the screen.",
+          "Open Settings on my phone and take a screenshot."
         ],
         "brandColor": "#ff4438",
         "composerIcon": "./assets/icon.png",
@@ -68,10 +68,10 @@
               "expected_behavior": "Launches Settings on the running phone and returns a screenshot showing the Settings app."
             },
             {
-              "description": "Open a link and read the page",
-              "prompt": "Open example.com on my phone and tell me what the page says.",
-              "tools_triggered": "phone_open_url, phone_list_elements_on_screen",
-              "expected_behavior": "Opens https://example.com in the phone's browser and reports the heading Example Domain."
+              "description": "Tap through an app",
+              "prompt": "In Settings on my phone, open Network & internet and tell me what it shows.",
+              "tools_triggered": "phone_launch_app, phone_list_elements_on_screen, phone_click_on_screen_at_coordinates",
+              "expected_behavior": "Opens Settings, taps Network & internet, and lists the options on that screen."
             },
             {
               "description": "Stop the phone",
