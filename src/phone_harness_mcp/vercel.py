@@ -12,6 +12,12 @@ command line:
     PHONE_HARNESS_MCP_OAUTH_ISSUER    switches OAuth on; unset means API keys only
     PHONE_HARNESS_MCP_OAUTH_SCOPE     the scope advertised to OAuth clients; default phone:drive
     PHONE_HARNESS_CLOUD_API           the API; default https://api.phone-harness.com
+    PHONE_HARNESS_MCP_DRIVE_PATH      a second endpoint with no reservation tools and
+                                      no prices, for ChatGPT's plugin directory, whose
+                                      rules bar a plugin from selling; default /chatgpt
+    PHONE_HARNESS_MCP_OPENAI_CHALLENGE  the token OpenAI's plugin dashboard asks for at
+                                      /.well-known/openai-apps-challenge to check who
+                                      owns this hostname; unset means no such page
 
 Requests are stateless and answered as JSON, so any instance can take any
 request. `phone_start_device` waits up to four minutes for a phone, which
@@ -30,6 +36,11 @@ def _env(name: str, default: str | None = None) -> str | None:
     return value.strip() if value and value.strip() else default
 
 
+def _well_known() -> dict[str, str]:
+    token = _env("PHONE_HARNESS_MCP_OPENAI_CHALLENGE")
+    return {"openai-apps-challenge": token} if token else {}
+
+
 app = build_http_app(
     api=api_url(),
     mcp_path="/mcp",
@@ -40,4 +51,6 @@ app = build_http_app(
     oauth_issuer=_env("PHONE_HARNESS_MCP_OAUTH_ISSUER"),
     oauth_scope=_env("PHONE_HARNESS_MCP_OAUTH_SCOPE", DEFAULT_OAUTH_SCOPE),
     stateful=False,
+    drive_path=_env("PHONE_HARNESS_MCP_DRIVE_PATH", "/chatgpt"),
+    well_known=_well_known(),
 )

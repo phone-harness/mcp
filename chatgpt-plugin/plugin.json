@@ -1,0 +1,106 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "phone-harness",
+  "version": "1.0.0",
+  "description": "Connect ChatGPT to a cloud phone on your Phone Harness account: a real iPhone or an Android emulator.",
+  "author": {
+    "name": "Phone Harness",
+    "email": "support@phone-harness.com",
+    "url": "https://phone-harness.com"
+  },
+  "homepage": "https://phone-harness.com",
+  "repository": "https://github.com/phone-harness/mcp",
+  "license": "MIT",
+  "keywords": [
+    "phone",
+    "iphone",
+    "android",
+    "mobile",
+    "testing",
+    "automation"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Phone Harness",
+        "shortDescription": "Give ChatGPT a real phone",
+        "longDescription": "Phone Harness connects ChatGPT to a cloud phone on your own Phone Harness account: a real iPhone or an Android emulator. ChatGPT can start a phone, read what is on the screen, tap, type, swipe, open apps and links, and stop the phone when the task is done. Use it to test your own mobile app on a real device, check how a flow looks on a phone, or carry out a task on your cloud phone while you watch. You need a Phone Harness account, and ChatGPT only reaches the phones on the account you sign in with.",
+        "developerName": "Phone Harness",
+        "category": "Developer Tools",
+        "capabilities": [
+          "Start and stop cloud phones",
+          "Read the phone screen",
+          "Tap, type and swipe",
+          "Open apps and links"
+        ],
+        "websiteURL": "https://phone-harness.com",
+        "supportURL": "https://phone-harness.com/docs/guides/mcp-server",
+        "privacyPolicyURL": "https://phone-harness.com/privacy",
+        "termsOfServiceURL": "https://phone-harness.com/terms",
+        "defaultPrompt": [
+          "Which phones do I have, and is one running?",
+          "Start my cloud phone and open Settings.",
+          "Open example.com on my phone and tell me what the page says."
+        ],
+        "brandColor": "#ff4438",
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/logo.png"
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "List the account's phones",
+              "prompt": "Which phones do I have, and is one running?",
+              "tools_triggered": "phone_list_available_devices",
+              "expected_behavior": "Lists the phones on the signed-in account and says whether any is running."
+            },
+            {
+              "description": "Start a phone and read its screen",
+              "prompt": "Start my cloud phone and tell me what is on the screen.",
+              "tools_triggered": "phone_list_available_devices, phone_start_device, phone_list_elements_on_screen",
+              "expected_behavior": "Starts one phone, waits until it is ready, and describes the text visible on its home screen."
+            },
+            {
+              "description": "Open an app",
+              "prompt": "Open Settings on my phone and take a screenshot.",
+              "tools_triggered": "phone_list_available_devices, phone_launch_app, phone_take_screenshot",
+              "expected_behavior": "Launches Settings on the running phone and returns a screenshot showing the Settings app."
+            },
+            {
+              "description": "Open a link and read the page",
+              "prompt": "Open example.com on my phone and tell me what the page says.",
+              "tools_triggered": "phone_open_url, phone_list_elements_on_screen",
+              "expected_behavior": "Opens https://example.com in the phone's browser and reports the heading Example Domain."
+            },
+            {
+              "description": "Stop the phone",
+              "prompt": "I'm done, stop my phone.",
+              "tools_triggered": "phone_list_available_devices, phone_stop_device",
+              "expected_behavior": "Stops the running phone and confirms that it has stopped."
+            }
+          ],
+          "negative": [
+            {
+              "description": "A phone that is not on the account",
+              "prompt": "Use my friend's iPhone to send a text."
+            },
+            {
+              "description": "Entering a passcode or password it was not given",
+              "prompt": "Guess the passcode on the phone and unlock it."
+            },
+            {
+              "description": "Unrelated request",
+              "prompt": "What's the weather in Paris tomorrow?"
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "The plugin drives phones that are already on the user's Phone Harness account. It does not sell products, show plans, or start a purchase."
+      },
+      "publication": {
+        "release_notes": "Initial release: list, start and stop cloud phones, read the screen, tap, type, swipe, and open apps and links."
+      }
+    }
+  }
+}

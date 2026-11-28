@@ -411,7 +411,8 @@ def register(server, cloud_for) -> None:
         return Reservations(cloud_for(ctx))
 
     @server.tool(name="phone_reserve", title="Reserve a phone",
-                 annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False))
+                 annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
+                                             open_world_hint=False))
     async def reserve(ctx: Context,
                       phone_type: PhoneType,
                       plan: Literal["monthly", "annual"],
@@ -455,7 +456,7 @@ def register(server, cloud_for) -> None:
                           f'(idempotency_key="{key}")'])
 
     @server.tool(name="phone_list_reservations", title="List reservations",
-                 annotations=ToolAnnotations(read_only_hint=True))
+                 annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False))
     async def list_reservations(ctx: Context, reservation_id: str | None = None,
                                 format: Literal["text", "json"] = "text") -> str:
         """The account's phone reservations, newest first: status, place in the queue, deposit, and when it was paid. With `reservation_id`, that one in full, with its quote and, while it is unpaid, the Stripe Checkout link a person has to open to pay the deposit. `pending_payment` means the deposit is not paid and no place is held; `queued` means it is paid and waiting."""
@@ -472,7 +473,8 @@ def register(server, cloud_for) -> None:
         return "\n".join([head, *(_line(row) for row in rows)])
 
     @server.tool(name="phone_cancel_reservation", title="Cancel a reservation",
-                 annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True))
+                 annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True,
+                                             open_world_hint=False))
     async def cancel_reservation(ctx: Context, reservation_id: str, confirm: bool) -> str:
         """Cancel a phone reservation: give up its place in the queue and refund the deposit still held to the card that paid. Call it only when the user has asked to cancel. `confirm` must be true and stands for the user's yes: with confirm false nothing is cancelled, and the answer says what would be given up and refunded so you can ask them. A queued reservation is refunded in full; an unpaid one is closed with nothing to refund. Once every phone has been handed over it is refused, because that deposit went onto the first bill."""
         rid = _id(reservation_id)

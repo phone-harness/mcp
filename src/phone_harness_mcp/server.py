@@ -25,21 +25,43 @@ from .cloud import Cloud, StaticToken
 from .phone import DEFAULT_MINUTES, READY_WAIT, PhoneError, Phones, Unsupported, describe, minutes_left
 from .reservations import register as register_reservations
 
-INSTRUCTIONS = """Drive a Phone Harness Cloud phone: a real iPhone or an Android emulator, reached over HTTPS.
+_INTRO = """Drive a Phone Harness Cloud phone: a real iPhone or an Android emulator, reached over HTTPS."""
 
-Start with phone_list_available_devices. If a phone is running, pass its id as `device` to every other tool. If none is, phone_start_device starts one. Cloud Android is pay as you go at 5 cents per minute; a cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM, or 20% off billed annually at $64/mo, $80/mo with eSIM) and is not billed by the minute. Call phone_stop_device when the task is done.
+_START = """Start with phone_list_available_devices. If a phone is running, pass its id as `device` to every other tool. If none is, phone_start_device starts one. """
 
-To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked.
+_PRICES = """Cloud Android is pay as you go at 5 cents per minute; a cloud iPhone is a flat monthly subscription ($80/mo, $100/mo with eSIM, or 20% off billed annually at $64/mo, $80/mo with eSIM) and is not billed by the minute. """
 
-A cloud iPhone that has been left alone can be asleep (a black screenshot), on its lock screen or showing the StandBy clock. Taps, typing and app launches then do nothing or are refused. phone_wake brings it back. These phones are set up with no passcode, so never ask the user for one. phone_open_url opens an https link in an iPhone's browser whole, with no typing: use it for a long link or a sign-in link. phone_set_orientation turns an iPhone to portrait or to either landscape; the screen size and every coordinate change with it, so read the screen again afterwards.
+_STOP = """Call phone_stop_device when the task is done."""
 
-An account that has no cloud iPhone yet, or needs more of them, reserves them with a $20 per phone refundable deposit. phone_reserve returns a quote, which is authoritative, and a Stripe Checkout link. Reservations are for iPhones only (with or without eSIM). Cloud Android emulators are on the $20 plan and are not reserved. The iPhone prices above are the standard ones: a customer's first phone is at the intro price, so tell the user what the quote from phone_reserve says, not a price from memory. Give the link to the user: only a person can pay it, no tool here pays, and nothing is reserved until they do. Places in the queue go in the order deposits were paid, and nothing moves one up. phone_list_reservations shows each reservation's status and place; the website has no list of reservations, so that tool is the list. phone_cancel_reservation gives a place up, and the deposit still held goes back automatically to the card that paid; it needs confirm=true, which is the user's yes, so ask first. When a phone is handed over, its deposit becomes a credit on the first bill and is no longer refundable. An account can have five unpaid reservations an hour, and cancelling one does not free a place."""
+_READING = """To find something to tap, prefer phone_list_elements_on_screen (visible text with tap-ready centers) over a screenshot; take a screenshot to understand layout, or when there is no text. Coordinates are screen pixels; the screenshot tool says how to convert from the image it returns. After a tap or typing, read the screen again rather than assuming it worked."""
 
-READ_ONLY = ToolAnnotations(read_only_hint=True)
-TOUCH = ToolAnnotations(read_only_hint=False, destructive_hint=False)
+_IPHONE = """A cloud iPhone that has been left alone can be asleep (a black screenshot), on its lock screen or showing the StandBy clock. Taps, typing and app launches then do nothing or are refused. phone_wake brings it back. These phones are set up with no passcode, so never ask the user for one. phone_open_url opens an https link in an iPhone's browser whole, with no typing: use it for a long link or a sign-in link. phone_set_orientation turns an iPhone to portrait or to either landscape; the screen size and every coordinate change with it, so read the screen again afterwards."""
+
+_RESERVING = """An account that has no cloud iPhone yet, or needs more of them, reserves them with a $20 per phone refundable deposit. phone_reserve returns a quote, which is authoritative, and a Stripe Checkout link. Reservations are for iPhones only (with or without eSIM). Cloud Android emulators are on the $20 plan and are not reserved. The iPhone prices above are the standard ones: a customer's first phone is at the intro price, so tell the user what the quote from phone_reserve says, not a price from memory. Give the link to the user: only a person can pay it, no tool here pays, and nothing is reserved until they do. Places in the queue go in the order deposits were paid, and nothing moves one up. phone_list_reservations shows each reservation's status and place; the website has no list of reservations, so that tool is the list. phone_cancel_reservation gives a place up, and the deposit still held goes back automatically to the card that paid; it needs confirm=true, which is the user's yes, so ask first. When a phone is handed over, its deposit becomes a credit on the first bill and is no longer refundable. An account can have five unpaid reservations an hour, and cancelling one does not free a place."""
+
+# Said in place of prices and reservations where the server may not sell: it
+# may say a phone is missing and point at the page that describes the plans.
+_NOT_SOLD_HERE = """This server drives phones the account already has. It does not sell, reserve or upgrade anything. If the account has no phone it can start, say so plainly; the plans are described at https://phone-harness.com/pricing."""
+
+INSTRUCTIONS = "\n\n".join([_INTRO, _START + _PRICES + _STOP, _READING, _IPHONE, _RESERVING])
+
+# For a directory whose rules bar a plugin from selling subscriptions or
+# linking to a checkout (ChatGPT's plugin directory): the same server with
+# no prices and no reservation tools. See `build_server(reservations=False)`.
+DRIVE_ONLY_INSTRUCTIONS = "\n\n".join([_INTRO, _START + _STOP, _READING, _IPHONE, _NOT_SOLD_HERE])
+
+# Every tool states all three hints, because a directory review reads a
+# missing one as unanswered. `open_world_hint` is true for whatever reads or
+# acts on the phone's screen, since a phone shows and reaches anything on the
+# internet; it is false for what stays inside the account (which phones exist,
+# starting and stopping them, the state of the device itself).
+READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
+SCREEN = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=True)
+TOUCH = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=True)
 # Waking a phone that is awake, or turning one the way it already is, changes
 # nothing: both are safe to repeat.
-REPEATABLE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True)
+REPEATABLE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True,
+                             open_world_hint=False)
 
 BUTTONS = {
     "HOME": ("nav.home", {}),
@@ -306,11 +328,15 @@ def _elements_text(boxes: list[dict], bounds: dict | None) -> str:
     return "\n".join(lines)
 
 
-def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None) -> MCPServer:
+def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None,
+                 reservations: bool = True) -> MCPServer:
     """`cloud_for(ctx)` yields the signed-in `Cloud` for one tool call.
-    `allow_files` adds the tool that writes to this machine's disk: stdio only."""
+    `allow_files` adds the tool that writes to this machine's disk: stdio only.
+    `reservations=False` leaves out the tools that reserve phones and every
+    price in the instructions, for a directory that bars selling."""
     server = MCPServer(name="phone-harness", title="Phone Harness", version=__version__,
-                       instructions=INSTRUCTIONS, website_url="https://phone-harness.com",
+                       instructions=INSTRUCTIONS if reservations else DRIVE_ONLY_INSTRUCTIONS,
+                       website_url="https://phone-harness.com",
                        auth=auth, token_verifier=token_verifier)
 
     def phones(ctx) -> Phones:
@@ -327,7 +353,8 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
         return _devices_text(live, me)
 
     @server.tool(name="phone_start_device", title="Start a phone",
-                 annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False))
+                 annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
+                                             open_world_hint=False))
     async def start_device(ctx: Context,
                            platform: Literal["android", "ios"] | None = None,
                            kind: Literal["emulator", "device"] | None = None,
@@ -386,7 +413,8 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
                 f"Pass device=\"{sid}\" to the other tools.")
 
     @server.tool(name="phone_stop_device", title="Stop a phone",
-                 annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True))
+                 annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True,
+                                             open_world_hint=False))
     async def stop_device(ctx: Context, device: str) -> str:
         """End a running phone session. Stopping a cloud Android session stops its per-minute charge. A cloud iPhone is a monthly subscription and is not billed by the session. Anything not saved on the phone is lost."""
         result = await _thread(phones(ctx).stop, device)
@@ -401,7 +429,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
         b = await _thread(phones(ctx).bounds, device)
         return f"Screen is {_point(b['w'])}x{_point(b['h'])}, origin top-left. Taps and swipes take these coordinates."
 
-    @server.tool(name="phone_take_screenshot", title="Take a screenshot", annotations=READ_ONLY, structured_output=False)
+    @server.tool(name="phone_take_screenshot", title="Take a screenshot", annotations=SCREEN, structured_output=False)
     async def take_screenshot(ctx: Context, device: str, max_size: int = screenshots.DEFAULT_MAX_SIZE,
                               scale: float | None = None) -> list:
         """Take a screenshot of the phone. Use it to understand what is on screen when the text list is not enough. The image is usually smaller than the screen; the text before it says how to convert a point you see into screen coordinates. Do not reuse an old screenshot: the screen changes."""
@@ -428,7 +456,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
             path.write_bytes(data)
             return f"Saved {size[0]}x{size[1]} {fmt} to {path}."
 
-    @server.tool(name="phone_list_elements_on_screen", title="List what is on screen", annotations=READ_ONLY)
+    @server.tool(name="phone_list_elements_on_screen", title="List what is on screen", annotations=SCREEN)
     async def list_elements_on_screen(ctx: Context, device: str, format: Literal["text", "json"] = "text") -> str:
         """List the text visible on screen with the center of each piece, ready to tap with phone_click_on_screen_at_coordinates. On Android the positions come from the accessibility tree; on an iPhone from reading the pixels. Call it again after the screen changes."""
         ph = phones(ctx)
@@ -590,6 +618,7 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
 
     # --- reserving phones the account does not have yet -------------------------
 
-    register_reservations(server, cloud_for)
+    if reservations:
+        register_reservations(server, cloud_for)
 
     return server

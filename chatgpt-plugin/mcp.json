@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "phone-harness": {
+      "type": "streamable-http",
+      "url": "https://mcp.phone-harness.com/chatgpt",
+      "extensions": {
+        "com.openai": {
+          "auth": {
+            "type": "oauth",
+            "client": {
+              "mode": "cimd"
+            },
+            "baseScopes": [
+              "phone:drive"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
