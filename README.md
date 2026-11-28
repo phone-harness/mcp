@@ -12,7 +12,7 @@ Streamable HTTP. Sign-in is OAuth and asks for the `phone:drive` scope. An API k
 
     https://mcp.phone-harness.com/mcp
 
-[<img src="https://img.shields.io/badge/Add_to-Claude-000000?style=flat-square&logo=claude&logoColor=white" alt="Add to Claude">](https://claude.ai/customize/connectors?modal=add-custom-connector&connectorName=Phone%20Harness&connectorUrl=https%3A%2F%2Fmcp.phone-harness.com%2Fmcp)
+[<img src="https://img.shields.io/badge/Add_to-Claude-000000?style=flat-square&logo=claude&logoColor=white" alt="Add to Claude">](https://claude.ai/directory/phone-harness)
 [<img src="https://img.shields.io/badge/Add_to-Cursor-000000?style=flat-square&logo=cursor" alt="Add to Cursor">](cursor://anysphere.cursor-deeplink/mcp/install?name=phone-harness&config=eyJ1cmwiOiJodHRwczovL21jcC5waG9uZS1oYXJuZXNzLmNvbS9tY3AifQ==)
 [<img src="https://img.shields.io/badge/Add_to-VS_Code-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white" alt="Add to VS Code">](https://vscode.dev/redirect/mcp/install?name=phone-harness&config=%7B%22type%22%3A%22http%22%2C%22url%22%3A%22https%3A%2F%2Fmcp.phone-harness.com%2Fmcp%22%7D)
 
@@ -22,7 +22,9 @@ Streamable HTTP. Sign-in is OAuth and asks for the `phone:drive` scope. An API k
 
 ### Claude
 
-Use the Add to Claude button above, or open **Customize → Connectors** and add a custom connector (**Add → Custom → Web**, or **Add custom connector**). Name it Phone Harness, paste `https://mcp.phone-harness.com/mcp`, choose sign-in rather than No sign in, and add it. On Team and Enterprise, an Owner adds it under **Organization settings → Connectors**; members then connect.
+Phone Harness is in Claude's connector directory. Use the Add to Claude button above, or open **Customize → Connectors**, search for Phone Harness, and connect it. Sign in to your Phone Harness account when Claude asks. On Team and Enterprise, an Owner may need to allow the connector for the organization first.
+
+To add it by URL instead, choose **Add custom connector**, name it Phone Harness, paste `https://mcp.phone-harness.com/mcp`, and choose sign-in rather than No sign in.
 
 ### Cursor
 
