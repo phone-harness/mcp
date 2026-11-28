@@ -31,7 +31,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from .cloud import Cloud, CloudError, NotSignedIn, Unreachable
-from .phone import PhoneError, Phones
+from .phone import NO_SUCH_ORG, ROLE_REQUIRED, PhoneError, Phones
 
 MAX_QUANTITY = 50            # the API's limit for one reservation
 MAX_USE_CASE = 2000          # and for the free text
@@ -39,7 +39,8 @@ TIMEOUT = 75                 # the API talks to Stripe before it answers
 # The only place the API sends anyone to pay.
 CHECKOUT_HOST = "checkout.stripe.com"
 # What the API says of an id that names none of the account's reservations. Any
-# other 404 may be an API with no reservation routes; see Reservations._live.
+# other 404 may be an API with no reservation routes, unless its code says the
+# organization is what was not found; see Reservations._live.
 NO_SUCH = "No such reservation"
 # Loose on purpose: enough to be safe in a URL path. The API decides what exists.
 RESERVATION_ID = re.compile(r"rsv_[A-Za-z0-9]{1,64}")
@@ -251,7 +252,9 @@ def refusal(e: CloudError, rid: str | None = None, key: str | None = None) -> Ph
     The API's `error` is written for a customer and is passed on as it is; its
     `code` decides what is added. `key` is the Idempotency-Key of a create that
     can be safely repeated."""
-    if e.status == 401:
+    if e.status == 401 or e.code in (NO_SUCH_ORG, ROLE_REQUIRED):
+        # About who is asking and in which organization, not about a
+        # reservation: said in the words the phone tools use.
         return Phones._translate(e, None)
     said = e.error
     again = (f' Call phone_reserve again with the same arguments and idempotency_key="{key}" to continue this '
@@ -329,7 +332,7 @@ class Reservations:
         try:
             return self.cloud.request(method, path, timeout=TIMEOUT)
         except CloudError as e:
-            if e.status == 404 and rid and e.error != NO_SUCH and not self._live():
+            if e.status == 404 and rid and e.error != NO_SUCH and e.code != NO_SUCH_ORG and not self._live():
                 raise PhoneError(NOT_LIVE) from None
             raise refusal(e, rid=rid) from None
         except (NotSignedIn, Unreachable) as e:

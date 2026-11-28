@@ -2,9 +2,10 @@
 
 Shapes follow phone-cloud's docs/api.md: bearer auth, `GET /me`, the session
 lifecycle, and `POST /sessions/{sid}/op` with its 400/404/409 contract. Every
-op lands in `.ops`, every request in `.requests`, so a test can assert what the
-server actually sent. The same process also plays the OAuth token endpoint, so
-the CLI-login refresh path can be tested without Clerk.
+op lands in `.ops`, every request in `.requests` and its headers in
+`.request_headers`, so a test can assert what the server actually sent. The
+same process also plays the OAuth token endpoint, so the CLI-login refresh
+path can be tested without Clerk.
 
 An iPhone here can be on its lock screen (`.locked`), as a real one is after it
 has been left alone. The phone's host then refuses to touch it, and the op
@@ -15,6 +16,12 @@ It also plays the reservation routes (docs/api.md, "Reservations"): a phone is
 asked for, the answer is a quote and a Stripe Checkout link, and nothing here
 ever charges anyone. `.reservation_calls` keeps each of those requests with its
 headers and body.
+
+And it knows which organizations an account is in (`.orgs`). A request acts in
+the one its `X-Phone-Harness-Org` header names, or in the caller's own when it
+has no such header. Naming one the caller is not in is a 404 on every route,
+and a teammate who is only a member cannot reserve. What teammates share is
+not played: a caller sees its own phones whichever organization it names.
 """
 from __future__ import annotations
 
@@ -43,6 +50,7 @@ NOT_DONE = "The phone did not complete that operation."
 URL_MAX = 4096
 SAFARI = "com.apple.mobilesafari"
 UNSET = object()        # "no answer was scripted", where None is an answer a host can give
+ORG_HEADER = "X-Phone-Harness-Org"      # names the organization a request acts in
 
 BOUNDS = {"x": 0, "y": 0, "w": 390, "h": 844, "id": "mock"}
 # The capture is twice the coordinate space on each side, like a Retina iPhone,
@@ -139,6 +147,7 @@ class FakeCloud:
         self.sessions = {}
         self.ops = []           # (sid, op, kw)
         self.requests = []      # (method, path, bearer)
+        self.request_headers = []   # each of those requests' headers, lowercase names, in the same order
         self.busy_times = 0     # the next N ops answer 409 busy
         self.outage_times = 0   # the next N ops answer 503
         self.lock = threading.Lock()
@@ -172,6 +181,7 @@ class FakeCloud:
         self.turn_lag = 0             # how many screenshots after a turn still show the old way up
         self.upright_lock = set()     # ids of sessions whose iPhone has Portrait Orientation Lock on
         self.home_turns = False       # True: a large iPhone, whose Home Screen turns with the phone
+        self.orgs = {}                # organization id -> {uid: "owner", "admin" or "member"}: who is in it
 
     # --- lifecycle --------------------------------------------------------------
 
@@ -240,6 +250,7 @@ class FakeCloud:
         bearer = auths[0][7:] if auths and auths[0].lower().startswith("bearer ") else None
         with self.lock:
             self.requests.append((method, path, bearer))
+            self.request_headers.append({k.lower(): v for k, v in h.headers.items()})
         try:
             if path == "/oauth/token" and method == "POST":
                 return self._token_endpoint(h)
@@ -250,12 +261,25 @@ class FakeCloud:
             user = self.tokens.get(bearer) if bearer else None
             if not user:
                 raise _Reply(401, {"error": "sign in"})
+            self.role(user, h)              # an organization the caller is not in: a 404, whatever the route
             status, body, headers = self.route(method, path, user, h)
             self._send(h, status, body, headers)
         except _Reply as r:
             self._send(h, r.status, r.body, r.headers)
         except _Dropped:
             h.close_connection = True       # the request was handled; its answer never arrives
+
+    def role(self, user, h):
+        """The caller's role in the organization the request acts in: the one
+        its header names, or the caller's own, where the caller is the owner.
+        One the caller is not in is answered the same whether or not it exists."""
+        named = h.headers.get(ORG_HEADER)
+        if named is None:
+            return "owner"
+        role = self.orgs.get(named, {}).get(user["uid"])
+        if role is None:
+            raise _Reply(404, {"error": "No such organization", "code": "no_such_organization"})
+        return role
 
     def _token_endpoint(self, h):
         n = int(h.headers.get("Content-Length") or 0)
@@ -520,6 +544,8 @@ class FakeCloud:
             raise _Reply(404, {"error": f"no route {method} {path}"})
         mine = [r for r in self.reservations.values() if r["uid"] == user["uid"]]
         if len(parts) == 1 and method == "POST":
+            if self.role(user, h) == "member":      # reserving is for the organization's owner or an admin
+                raise _Reply(403, {"code": "role_required", "role": "admin"})
             return self.reserve(user, body, h.headers.get("Idempotency-Key"))
         if len(parts) == 1 and method == "GET":
             return 200, {"reservations": [self.shown(r) for r in reversed(mine)]}, None

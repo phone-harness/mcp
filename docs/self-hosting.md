@@ -230,6 +230,46 @@ docker build -t phone-harness-mcp .
 docker run --rm -p 8000:8000 phone-harness-mcp --port 8000 --host 0.0.0.0 --allowed-hosts '*'
 ```
 
+## Organizations
+
+Every account is an organization of one, and the teammates its owner invites
+share its phones. A call acts in the caller's own organization unless it names
+another one the caller is in. An API key belongs to one organization and names
+nothing: a teammate uses a key made in the team's organization.
+
+Over stdio, set `PHONE_HARNESS_ORG` to the organization's id, for a machine
+signed in with `phone-harness cloud login`. It is read once, when the server
+starts. Unset or empty, the sign-in acts in its own organization.
+
+```json
+{
+  "mcpServers": {
+    "phone-harness": {
+      "command": "uvx",
+      "args": ["phone-harness-mcp"],
+      "env": { "PHONE_HARNESS_ORG": "org_0123456789abcdef01234567" }
+    }
+  }
+}
+```
+
+Over HTTP, a request names the organization in an `X-Phone-Harness-Org`
+header, beside its bearer; the [README](../README.md#organizations) has a
+client config. The server sends it on with the API calls made for that
+request and with no others. It keeps nothing between requests, it does not
+read `PHONE_HARNESS_ORG` from its own environment, and it checks that a
+bearer is good without the header. A request with no such header sends none.
+
+An id is `org_` followed by 24 lowercase hex characters
+(`phone-harness cloud orgs` lists the ones you are in), and it is checked
+before it is sent on. Over stdio, a value that is not one stops the server
+from starting. Over HTTP it fails the tool call, as do two such headers on
+one request, and the call sends nothing to the API. The id is a choice, not
+a credential: the API decides whether the caller is in that organization,
+and the tool says so when it is not. Some things are for the organization's
+owner or an admin, such as reserving a phone for it; a teammate without that
+role is told so.
+
 ## Security
 
 - The server is a thin HTTPS client. It never holds a phone, and over HTTP it

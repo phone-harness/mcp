@@ -8,6 +8,12 @@ Over stdio the server uses this machine's credential: PHONE_HARNESS_API_KEY,
 `--api-key`, or the sign-in from `phone-harness cloud login`. Over HTTP it
 uses none of those, ever: the bearer on each request is forwarded to Phone
 Harness Cloud, so one process can serve many accounts and leaks none.
+
+The organization to act in comes from the same place as the credential. Over
+stdio it is this machine's: PHONE_HARNESS_ORG, read once when the server
+starts; unset, the sign-in acts in its own. Over HTTP that variable is never
+read: each request names its own in `X-Phone-Harness-Org`, for that request
+and no other.
 """
 from __future__ import annotations
 
@@ -16,7 +22,7 @@ import sys
 import click
 
 from . import __version__
-from .cloud import API_URL, api_url, local_credentials
+from .cloud import API_URL, NotAnOrganization, api_url, local_credentials, local_org
 from .server import build_server, hosted_cloud, stdio_cloud
 
 
@@ -177,7 +183,11 @@ def main(api_key, api_url, port, host, mcp_path, allowed_hosts, allowed_origins,
     """MCP server for Phone Harness Cloud: drive a real iPhone or an Android emulator from any MCP client."""
     api = (api_url or globals()["api_url"]()).rstrip("/")
     if port is None:
-        server = build_server(cloud_for=stdio_cloud(local_credentials(api_key), api), allow_files=True)
+        try:
+            org = local_org()
+        except NotAnOrganization as e:
+            raise click.UsageError(str(e)) from None
+        server = build_server(cloud_for=stdio_cloud(local_credentials(api_key), api, org), allow_files=True)
         server.run("stdio")
         return
     if api_key:

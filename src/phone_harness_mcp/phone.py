@@ -44,6 +44,17 @@ MAYBE_ASLEEP = ("If the iPhone is asleep, on its lock screen or showing the Stan
 MAYBE_STILL_TURNING = ("A turn that has to change the phone's rotation lock first takes about a minute and may "
                        "still be going: wait a minute, then take a screenshot to see which way up the phone is "
                        "before asking again.")
+# The API's two refusals about the organization a request acts in, by their
+# codes. Naming one the caller is not in is a 404 on every route, so it is read
+# before a 404 is taken to be about a phone or a reservation. Asking for more
+# than a teammate's role allows is a 403 whose `role` is the role it takes:
+# "owner", or "admin", which the owner can do too.
+NO_SUCH_ORG = "no_such_organization"
+ROLE_REQUIRED = "role_required"
+NOT_IN_ORG = ("That organization is not one this sign-in is in. Check the X-Phone-Harness-Org header (or "
+              "PHONE_HARNESS_ORG), or leave it out to act in this sign-in's own organization.")
+OWNER_ONLY = "Only the organization's owner can do this."
+OWNER_OR_ADMIN = "Only the organization's owner or an admin can do this."
 
 
 def needs_awake(op: str) -> bool:
@@ -199,6 +210,10 @@ class Phones:
         if e.status == 401:
             return PhoneError(f"Phone Harness Cloud refused the credential ({e.error}). Check the API key, or run "
                               "`phone-harness cloud login` again.")
+        if e.code == NO_SUCH_ORG:
+            return PhoneError(NOT_IN_ORG)
+        if e.code == ROLE_REQUIRED:
+            return PhoneError(OWNER_ONLY if e.body.get("role") == "owner" else OWNER_OR_ADMIN)
         if e.status == 404 and sid:
             return PhoneError(f"device {sid} is not running: it ended, or it is not this account's. "
                               "phone_list_available_devices shows what is running.")
