@@ -17,7 +17,7 @@ from typing import Literal
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.utilities.types import Image
-from mcp.types import TextContent, ToolAnnotations
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 from . import __version__, screenshots
 from .auth import bearer_of
@@ -486,6 +486,15 @@ def build_server(*, cloud_for, allow_files: bool, auth=None, token_verifier=None
         seconds = max(0.1, min(float(duration), 10000.0) / 1000.0)
         await _thread(phones(ctx).op, device, "input.press", x=_point(x), y=_point(y), duration=seconds)
         return f"Long-pressed ({_point(x)}, {_point(y)}) for {int(seconds * 1000)} ms."
+
+    @server.tool(name="phone_reset_input", title="Reset input", annotations=TOUCH)
+    async def reset_input(ctx: Context, device: str) -> CallToolResult:
+        """Use when taps or swipes are sent but do not land. Remakes only the cloud iPhone's touch/HID channel. Does not dismiss an alert, erase the device, restart the session, or wake/unlock the phone. Requires the same session/control permissions as tapping; view-only share tokens cannot use it. Takes only the device id. Returns the host's structured remake result unchanged; ok=false is an error result even when HTTP succeeds. Requires a host that supports input.reset."""
+        result = await _thread(phones(ctx).op, device, "input.reset")
+        if not isinstance(result, dict) or type(result.get("ok")) is not bool:
+            raise PhoneError("The phone returned no valid input remake result; recovery is unconfirmed.")
+        return CallToolResult(content=[TextContent(type="text", text=json.dumps(result))],
+                              structured_content=result, is_error=not result["ok"])
 
     @server.tool(name="phone_swipe_on_screen", title="Swipe", annotations=TOUCH)
     async def swipe_on_screen(ctx: Context, device: str, direction: Literal["up", "down", "left", "right"],

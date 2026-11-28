@@ -49,8 +49,10 @@ MAYBE_STILL_TURNING = ("A turn that has to change the phone's rotation lock firs
 def needs_awake(op: str) -> bool:
     """Does the phone's host refuse this op while an iPhone shows its lock screen?
     Touching the screen, typing, the app switcher, launching an app, opening a
-    link and turning the phone: yes. Looking at the screen and pressing Home: no."""
-    return op.startswith("input.") or op in ("nav.recents", "apps.launch", "url.open", "device.rotate")
+    link and turning the phone: yes. Looking at the screen, pressing Home and
+    remaking the touch/HID channel: no."""
+    return (op.startswith("input.") and op != "input.reset") or op in (
+        "nav.recents", "apps.launch", "url.open", "device.rotate")
 
 
 class PhoneError(ToolError):
@@ -156,7 +158,7 @@ class Phones:
                     # list: an API from before the op was offered. To the model
                     # that is a phone that cannot do it, not a mistake of its own.
                     raise Unsupported(f"Phone Harness Cloud does not offer {op!r} yet.") from None
-                error = self._translate(e, sid)
+                error = self._translate(e, sid, op=op)
                 if e.status == 502 and needs_awake(op) and self.platform(sid) == "ios":
                     # The API does not say why the phone did not do it. A locked
                     # iPhone is one reason, and the one a tool here can fix.
@@ -195,7 +197,7 @@ class Phones:
             raise PhoneError(str(e)) from None
 
     @staticmethod
-    def _translate(e: CloudError, sid: str | None) -> PhoneError:
+    def _translate(e: CloudError, sid: str | None, *, op: str | None = None) -> PhoneError:
         if e.status == 401:
             return PhoneError(f"Phone Harness Cloud refused the credential ({e.error}). Check the API key, or run "
                               "`phone-harness cloud login` again.")
@@ -204,7 +206,7 @@ class Phones:
                               "phone_list_available_devices shows what is running.")
         if e.status == 400 and e.unsupported:
             return Unsupported(e.error)
-        if e.status == 409 and e.code == LOCKED_CODE:
+        if e.status == 409 and e.code == LOCKED_CODE and op != "input.reset":
             return Locked(LOCKED)
         if e.status in (400, 403, 404, 409, 410, 413):
             text = e.error
