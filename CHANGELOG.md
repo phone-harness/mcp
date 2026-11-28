@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- The hosted server has a second endpoint, `/chatgpt`, for ChatGPT's plugin
+  directory, whose rules bar a plugin from selling subscriptions or linking to
+  a checkout. It drives the same phones and has no reservation tools and no
+  prices in its instructions. `/mcp` is unchanged. `--drive-path` turns the
+  second endpoint on for a self-hosted server; each endpoint is its own OAuth
+  protected resource.
+- Every tool now states `readOnlyHint`, `destructiveHint` and `openWorldHint`.
+  `openWorldHint` is true for the tools that read or act on the phone's
+  screen, and false for the ones that stay inside the account.
+- The Vercel function serves the token in `PHONE_HARNESS_MCP_OPENAI_CHALLENGE`
+  at `/.well-known/openai-apps-challenge`, which is how OpenAI's plugin
+  dashboard checks who owns the hostname.
+- `chatgpt-plugin/` holds the package uploaded to OpenAI's plugin dashboard.
 - `phone_set_orientation` turns a cloud iPhone to `portrait`, `landscape_left`
   or `landscape_right`. A cloud iPhone lies flat in a rack, so this is the
   only way its screen turns. The result gives the screen's new size and says
